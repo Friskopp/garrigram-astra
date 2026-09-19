@@ -4,7 +4,7 @@ Garrigram uses Workers for the app/API, D1 for posts and likes, R2 Standard for 
 
 ## Current deployment — September 19, 2026
 
-The Worker is deployed at **https://garrigram.garrigram.workers.dev** with company-only Cloudflare Access sign-in. HTTPS checks confirmed that signed-out requests for the homepage, JavaScript, posts API and upload paths redirect to the Access login page. The browser displays “Log in to Garrigram” with email-code login. A real member's sign-in and first production upload still need an end-to-end check.
+The Worker is deployed at **https://garrigram.garrigram.workers.dev** with company-only Cloudflare Access sign-in. HTTPS checks confirmed that signed-out requests for the homepage, JavaScript, posts API and upload paths redirect to the Access login page. The browser displays “Log in to Garrigram” with email-code login. A member completed sign-in and a production upload; the post remained in the live feed after reload. A subsequent read-only D1 check confirmed two saved posts totaling 1,348,412 photo bytes, including one with location coordinates. Live map-marker rendering and reactions have not yet been checked in a signed-in production session.
 
 - D1 `garrigram`: `2a5b8292-dda7-4b9f-86b7-34af3aad6000`, Western Europe, migration `0001_initial.sql` applied.
 - R2 `garrigram-photos`: Standard storage; public `r2.dev` access confirmed disabled.
