@@ -16,7 +16,8 @@ test('photo upload, feed, reaction isolation, validation, and restart persistenc
   await start();
   assert.deepEqual(await(await request('/api/posts')).json(),[]);
   const image='data:image/jpeg;base64,'+(await readFile('public/images/fika.jpg')).toString('base64');
-  const payload={author:'Test Person',caption:'Saved through restart',image,location:'Stockholm',lat:59.3293,lng:18.0686};
+  const effect={width:1200,height:800,faces:[{x:500,y:300,angle:12,length:80}]};
+  const payload={effect,author:'Test Person',caption:'Saved through restart',image,location:'Stockholm',lat:59.3293,lng:18.0686};
   assert.equal((await request('/api/posts','POST',{...payload,author:''})).status,400);
   assert.equal((await request('/api/posts','POST',{...payload,lat:190})).status,400);
   assert.equal((await request('/api/posts','POST',{...payload,image:'data:image/jpeg;base64,bm90LWEtcGhvdG8='})).status,400);
@@ -27,8 +28,18 @@ test('photo upload, feed, reaction isolation, validation, and restart persistenc
   await request(`/api/posts/${id}/like`,'PUT',{liked:true});await request(`/api/posts/${id}/like`,'PUT',{liked:true});
   rows=await(await request('/api/posts')).json();assert.equal(rows[0].likes,1);assert.equal(rows[0].liked,1);
   assert.equal((await(await request('/api/posts','GET',undefined,'test-visitor-two')).json())[0].liked,0);
+  assert.equal((await request(`/api/posts/${id}/comments`,'POST',{author:'Team',body:'   '})).status,400);
+  assert.equal((await request(`/api/posts/${id}/comments`,'POST',{author:'Team',body:'x'.repeat(1001)})).status,400);
+  assert.equal((await request('/api/posts/missing/comments','POST',{author:'Team',body:'Hello'})).status,404);
+  assert.equal((await request(`/api/posts/${id}/comments`,'POST',{author:'Team',body:'Hello'},'test-visitor-one',{origin:'https://evil.example'})).status,403);
+  for(let i=0;i<23;i++)assert.equal((await request(`/api/posts/${id}/comments`,'POST',{author:'Teammate',body:`Comment ${i}`})).status,201);
+  let page=await(await request(`/api/posts/${id}/comments`)).json();assert.equal(page.comments.length,20);assert.equal(page.hasMore,true);
+  const older=await(await request(`/api/posts/${id}/comments?before=${page.nextCursor}`)).json();assert.equal(older.comments.length,3);assert.equal(older.hasMore,false);assert.equal(older.comments[0].body,'Comment 0');
+  await request(`/api/posts/${id}/like`,'PUT',{liked:true,author:'Named Teammate'});
+  assert.deepEqual(await(await request(`/api/posts/${id}/like`)).json(),[{author:'Named Teammate'}]);
   await stop();await start();
   rows=await(await request('/api/posts')).json();assert.equal(rows.length,1);assert.equal(rows[0].caption,payload.caption);assert.equal(rows[0].likes,1);assert.equal((await fetch(base+rows[0].image)).status,200);
+  assert.deepEqual(JSON.parse(rows[0].effect),effect);assert.equal(rows[0].comment_count,23);assert.equal((await(await request(`/api/posts/${id}/comments`)).json()).comments.length,20);
   await request(`/api/posts/${id}/like`,'PUT',{liked:false});assert.equal((await(await request('/api/posts')).json())[0].likes,0);
   assert.equal((await request('/api/posts/missing-id/like','PUT',{liked:true})).status,404);
   const form=new FormData();form.set('author','Multipart tester');form.set('caption','Browser upload format');form.set('photo',new Blob([await readFile('public/images/fika.jpg')],{type:'image/jpeg'}),'fika.jpg');

@@ -1,0 +1,1 @@
+ALTER TABLE likes ADD COLUMN author TEXT NOT NULL DEFAULT 'A teammate';

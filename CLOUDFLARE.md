@@ -1,14 +1,14 @@
 # Cloudflare deployment
 
-Garrigram uses Workers for the app/API, D1 for posts and likes, R2 Standard for photos, and Cloudflare Access for verified `@garrison.se` sign-in. No custom domain is required; use the Worker's HTTPS `workers.dev` URL initially.
+Garrigram uses Workers for the app/API, D1 for posts, comments, named likes and photo effects, R2 Standard for photos, and Cloudflare Access for verified `@garrison.se` sign-in. No custom domain is required; use the Worker's HTTPS `workers.dev` URL initially.
 
 ## Current deployment — September 19, 2026
 
 The Worker is deployed at **https://garrigram.garrigram.workers.dev** with company-only Cloudflare Access sign-in. HTTPS checks confirmed that signed-out requests for the homepage, JavaScript, posts API and upload paths redirect to the Access login page. The browser displays “Log in to Garrigram” with email-code login. A member completed sign-in and a production upload; the post remained in the live feed after reload. A subsequent read-only D1 check confirmed two saved posts totaling 1,348,412 photo bytes, including one with location coordinates. Live map-marker rendering and reactions have not yet been checked in a signed-in production session.
 
-- D1 `garrigram`: `2a5b8292-dda7-4b9f-86b7-34af3aad6000`, Western Europe, migration `0001_initial.sql` applied.
+- D1 `garrigram`: `2a5b8292-dda7-4b9f-86b7-34af3aad6000`, Western Europe, migrations `0001` through `0004` applied.
 - R2 `garrigram-photos`: Standard storage; public `r2.dev` access confirmed disabled.
-- Current Worker version: `04a8a8ba-edb2-4bc4-ba62-4f0e263c8d3a`.
+- Current Worker version: `fcf3004f-c6b8-4450-b9c1-8939de8d369f`.
 - Zero Trust Free team: `garrigram`; issuer `https://garrigram.cloudflareaccess.com`.
 - Access application: `a4b8a989-d4c9-47db-9767-85b9c50e972c`, protecting the `garrigram` Worker's production and preview URLs.
 - Access policy: `4af22bc8-73ca-472a-8738-511e6c92cf4a` (Garrison team). Its single Allow rule includes emails ending in `garrison.se`, verified in the saved dashboard configuration. Only One-time PIN is accepted; application sessions last 24 hours.
@@ -100,3 +100,15 @@ Stay on Workers Free and R2 Standard. Cloudflare Access Free has a seat limit; r
 D1 supports Time Travel recovery; R2 needs its own photo backup plan before relying on it for irreplaceable originals. The app stores browser-resized JPEGs, not original camera files. Keep applied D1 migrations immutable and add numbered migrations for future changes. Redeploying code does not reset D1 or R2.
 
 Official references: [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/), [R2 pricing](https://developers.cloudflare.com/r2/pricing/), [Access for Workers](https://developers.cloudflare.com/workers/configuration/cloudflare-access/), [JWT validation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/).
+
+## Public welcome and login branding
+
+`wrangler.welcome.jsonc` deploys a static public welcome page at **https://go.garrigram.workers.dev** using `bun run cf:welcome`. This shorter share URL has Open Graph/Twitter metadata and a 1200×630 preview image. Its Join the team link enters the protected app on the original Worker URL. It has no database or photo bindings.
+
+The Access login uses the supplied Garrison logo, charcoal background and company copy. Its logo is served publicly by the separate `garrigram-brand` Worker (`wrangler.brand.jsonc`). Cloudflare’s email form/button and Access heading retain provider styling. Brand content is in `cloudflare/branding/`; never put private files there.
+
+For schema changes, run `bun run cf:migrate` before `bun run cf:deploy`. The current additions are migration 0002 (comments), 0003 (like display names), and 0004 (photo overlays). Old likes have the fallback name “A teammate”; new likes store the chosen display name. Names are user-entered labels; reaction ownership remains the verified email.
+
+Release verification: five automated tests passed (local persistence, Access JWT checks, unauthenticated denial, Cloudflare D1/R2 persistence, overlay validation). Browser checks confirmed face detection on a public portrait fixture, original/overlay toggling, comment submission, named-like dialog, closer map layout, branded Access login and public welcome page. Production signed-out checks for the app, assets, APIs and photo paths redirect to Access; welcome HTML and preview PNG return HTTP 200. The new authenticated features were tested locally; the production browser was signed out at deployment.
+
+Post-release read-only D1 verification found all four migrations applied and five production posts totaling 4,190,044 photo bytes. Production data was not modified by the UI tests. Welcome Worker version: `01f9826f-20d0-482d-af6a-cf6503f7e172`.

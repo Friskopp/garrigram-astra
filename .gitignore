@@ -8,3 +8,4 @@ node_modules/
 .wrangler/
 dist/
 test-results/
+public/vendor/mediapipe/

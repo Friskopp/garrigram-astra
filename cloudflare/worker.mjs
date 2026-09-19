@@ -1,4 +1,5 @@
 import { authenticate, HttpError } from './auth.mjs';
+import { validateEffect } from '../public/effects.mjs';
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_REQUEST_BYTES = MAX_IMAGE_BYTES + 64 * 1024;
@@ -63,10 +64,11 @@ async function createPost(request, env, identity) {
     (SELECT COUNT(*) FROM posts WHERE owner_email=? AND created_at>=?) AS daily`).bind(identity.email, `${new Date().toISOString().slice(0,10)}T00:00:00.000Z`).first();
   if (quota.bytes + photo.size > 8_000_000_000) fail('Our photo storage is full. Please contact the app owner.', 507);
   if (quota.daily >= 30) fail('You’ve shared 30 moments today. Come back tomorrow for more.', 429);
+  let effect;try{effect=validateEffect(form.get('effect'));}catch(error){fail(error.message);}
   await env.PHOTOS.put(key, photo.stream(), { httpMetadata: { contentType: type[1] } });
   try {
-    await env.DB.prepare(`INSERT INTO posts (id,author,owner_email,caption,image,image_bytes,location,lat,lng,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`).bind(id,author.trim(),identity.email,caption.trim(),`/uploads/${key}`,photo.size,location,lat,lng,new Date().toISOString()).run();
+    await env.DB.prepare(`INSERT INTO posts (id,author,owner_email,caption,image,image_bytes,location,lat,lng,created_at,effect)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).bind(id,author.trim(),identity.email,caption.trim(),`/uploads/${key}`,photo.size,location,lat,lng,new Date().toISOString(),effect?JSON.stringify(effect):null).run();
   } catch (error) {
     await env.PHOTOS.delete(key);
     if (String(error).includes('storage_budget_exceeded')) fail('Our photo storage is full. Please contact the app owner.',507);
@@ -90,21 +92,48 @@ export function createApp(verifyIdentity = authenticate) {
         }
         if (url.pathname === '/api/session' && method === 'GET') return json({ email: identity.email, hosted: true });
         if (url.pathname === '/api/posts' && method === 'GET') {
-          const { results } = await env.DB.prepare(`SELECT p.id,p.author,p.caption,p.image,p.location,p.lat,p.lng,p.created_at,p.demo,
+          const { results } = await env.DB.prepare(`SELECT p.id,p.author,p.caption,p.image,p.location,p.lat,p.lng,p.created_at,p.demo,p.effect,
             (SELECT COUNT(*) FROM likes WHERE post_id=p.id) AS likes,
+            (SELECT COUNT(*) FROM comments WHERE post_id=p.id) AS comment_count,
             EXISTS(SELECT 1 FROM likes WHERE post_id=p.id AND visitor=?) AS liked
             FROM posts p ORDER BY created_at DESC`).bind(identity.email).all();
           return json(results);
         }
         if (url.pathname === '/api/posts' && method === 'POST') return await createPost(request, env, identity);
+        const comment = url.pathname.match(/^\/api\/posts\/([a-zA-Z0-9-]+)\/comments$/);
+        if (comment && ['GET','POST'].includes(method)) {
+          if (!await env.DB.prepare('SELECT id FROM posts WHERE id=?').bind(comment[1]).first()) fail('Moment not found.',404);
+          if (method === 'GET') {
+            const before=url.searchParams.get('before');
+            if(before!==null && (!/^\d+$/.test(before)||!Number.isSafeInteger(Number(before))||Number(before)<1)) fail('Invalid comment page.');
+            const {results}=await env.DB.prepare('SELECT id,author,body,created_at FROM comments WHERE post_id=? AND id<? ORDER BY id DESC LIMIT 21').bind(comment[1],before?Number(before):Number.MAX_SAFE_INTEGER).all();
+            const page=results.slice(0,20);
+            return json({comments:page.reverse(),hasMore:results.length>20,nextCursor:page[0]?.id||null});
+          }
+          let body;
+          try { body=await (await limitedRequest(request,8192)).json(); }
+          catch(error) { if(error.status)throw error;fail('Invalid comment.'); }
+          if(typeof body?.author!=='string'||!body.author.trim()||body.author.length>60) fail('Please enter a name (up to 60 characters).');
+          if(typeof body?.body!=='string'||!body.body.trim()||body.body.length>1000) fail('Write a comment between 1 and 1,000 characters.');
+          const created_at=new Date().toISOString();
+          const result=await env.DB.prepare('INSERT INTO comments (post_id,author,owner_email,body,created_at) VALUES (?,?,?,?,?) RETURNING id,author,body,created_at').bind(comment[1],body.author.trim(),identity.email,body.body.trim(),created_at).first();
+          return json(result,201);
+        }
         const like = url.pathname.match(/^\/api\/posts\/([a-zA-Z0-9-]+)\/like$/);
+        if (like && method === 'GET') {
+          if (!await env.DB.prepare('SELECT id FROM posts WHERE id=?').bind(like[1]).first()) fail('Moment not found.',404);
+          const {results}=await env.DB.prepare('SELECT author FROM likes WHERE post_id=? ORDER BY author COLLATE NOCASE').bind(like[1]).all();
+          return json(results);
+        }
         if (like && method === 'PUT') {
           let body;
           try { body = await (await limitedRequest(request,1024)).json(); }
           catch (error) { if(error.status) throw error; fail('Invalid reaction.'); }
           if (typeof body?.liked !== 'boolean') fail('Invalid reaction.');
           if (!await env.DB.prepare('SELECT id FROM posts WHERE id=?').bind(like[1]).first()) fail('Moment not found.',404);
-          if (body.liked) await env.DB.prepare('INSERT OR IGNORE INTO likes (post_id,visitor) VALUES (?,?)').bind(like[1],identity.email).run();
+          const author=body.author??'A teammate';
+          if(typeof author!=='string'||!author.trim()||author.length>60) fail('Please enter a name (up to 60 characters).');
+          if (body.liked) await env.DB.prepare('INSERT INTO likes (post_id,visitor,author) VALUES (?,?,?) ON CONFLICT(post_id,visitor) DO UPDATE SET author=excluded.author').bind(like[1],identity.email,author.trim()).run();
           else await env.DB.prepare('DELETE FROM likes WHERE post_id=? AND visitor=?').bind(like[1],identity.email).run();
           const result = await env.DB.prepare('SELECT COUNT(*) AS count FROM likes WHERE post_id=?').bind(like[1]).first();
           return json({liked:body.liked,likes:result.count});

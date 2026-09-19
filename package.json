@@ -15,9 +15,11 @@
     "cf:dev": "wrangler dev --config wrangler.local.jsonc",
     "cf:migrate:local": "wrangler d1 migrations apply garrigram-local --local --config wrangler.local.jsonc",
     "cf:migrate": "wrangler d1 migrations apply garrigram --remote --config wrangler.jsonc",
-    "cf:build": "wrangler deploy --dry-run --outdir dist --config wrangler.jsonc",
-    "cf:deploy": "node scripts/check-deployment.mjs && wrangler deploy --config wrangler.jsonc",
-    "test:cloudflare": "node --test test/cloudflare.test.mjs"
+    "cf:build": "node scripts/prepare-effects.mjs && wrangler deploy --dry-run --outdir dist --config wrangler.jsonc",
+    "cf:deploy": "node scripts/prepare-effects.mjs && node scripts/check-deployment.mjs && wrangler deploy --config wrangler.jsonc",
+    "test:cloudflare": "node --test test/cloudflare.test.mjs",
+    "prepare:effects": "node scripts/prepare-effects.mjs",
+    "cf:welcome": "wrangler deploy --config wrangler.welcome.jsonc"
   },
   "devDependencies": {
     "esbuild": "0.28.1",
@@ -25,6 +27,7 @@
     "wrangler": "4.135.0"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "1.0.1",
     "jose": "6.2.12"
   }
 }

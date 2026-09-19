@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, mkdtemp, rm, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
@@ -31,7 +31,7 @@ test('Access authentication rejects unsigned, expired, wrong-audience and outsid
 });
 
 test('Production rejects unauthenticated requests to pages, APIs, and photo files before storage access',async()=>{
- for(const pathname of ['/','/app.js','/api/posts','/uploads/example.jpg']){
+ for(const pathname of ['/','/app.js','/api/posts','/uploads/example.jpg','/api/posts/example/comments','/api/posts/example/like']){
   const response=await worker.fetch(new Request('https://app.example'+pathname),authEnv);
   assert.equal(response.status,401);assert.equal(response.headers.get('cache-control'),'private, no-store');
  }
@@ -47,9 +47,11 @@ test('Cloudflare runtime persists multipart uploads and reactions in D1/R2 acros
   const start=()=>new Miniflare({...convertV4MiniflareOptions({name:'garrigram-test',modules:true,script:bundled.outputFiles[0].text,compatibilityDate:'2026-09-19',compatibilityFlags:['nodejs_compat'],d1Databases:{DB:'test-db'},d1Persist:path.join(dir,'d1'),r2Buckets:{PHOTOS:'test-photos'},r2Persist:path.join(dir,'r2')}),resourcePersistencePath:path.join(dir,'resources')});
   mf=start();let db=await mf.getD1Database('DB');
   // D1 exec parses by line. Flatten each migration statement, preserving trigger blocks.
-  const sql=await readFile('cloudflare/migrations/0001_initial.sql','utf8');
-  const statements=sql.match(/CREATE TRIGGER[\s\S]*?END;|(?:CREATE|INSERT)[\s\S]*?;/g);
-  for(const statement of statements)await db.prepare(statement).run();
+  for(const file of (await readdir('cloudflare/migrations')).filter(name=>name.endsWith('.sql')).sort()){
+    const sql=await readFile('cloudflare/migrations/'+file,'utf8');
+    const statements=sql.match(/CREATE TRIGGER[\s\S]*?END;|(?:CREATE|INSERT|ALTER)[\s\S]*?;/g);
+    for(const statement of statements)await db.prepare(statement).run();
+  }
   const req=async(route,options={})=>{
    const headers={origin:'https://local.example',...options.headers};
    // Serialize native Node FormData before crossing Miniflare's undici boundary.
@@ -58,16 +60,34 @@ test('Cloudflare runtime persists multipart uploads and reactions in D1/R2 acros
   };
   assert.deepEqual(await(await req('/api/posts')).json(),[]);
   const image=await readFile('public/images/fika.jpg');
-  const payload=()=>{const form=new FormData();form.set('author','Cloudflare test');form.set('caption','Saved to D1 and R2');form.set('photo',new Blob([image],{type:'image/jpeg'}),'fika.jpg');form.set('lat','59.32');form.set('lng','18.07');form.set('location','Stockholm');return form;};
+  const effect={width:1200,height:800,faces:[{x:500,y:300,angle:12,length:80}]};
+  const payload=()=>{const form=new FormData();form.set('effect',JSON.stringify(effect));form.set('author','Cloudflare test');form.set('caption','Saved to D1 and R2');form.set('photo',new Blob([image],{type:'image/jpeg'}),'fika.jpg');form.set('lat','59.32');form.set('lng','18.07');form.set('location','Stockholm');return form;};
   const response=await req('/api/posts',{method:'POST',body:payload()});assert.equal(response.status,201,await response.clone().text());
   const {id}=await response.json();let posts=await(await req('/api/posts')).json();assert.equal(posts.length,1);assert.equal(posts[0].location,'Stockholm');assert.equal(posts[0].owner_email,undefined);
   const photo=await req(posts[0].image);assert.equal(photo.status,200);assert.equal(photo.headers.get('content-type'),'image/jpeg');assert.equal((await photo.arrayBuffer()).byteLength,image.byteLength);assert.equal(photo.headers.get('cache-control'),'private, no-store');
-  for(let i=0;i<2;i++)assert.equal((await req(`/api/posts/${id}/like`,{method:'PUT',headers:{'content-type':'application/json','x-visitor-id':'fake-'+i},body:JSON.stringify({liked:true})})).status,200);
+  for(let i=0;i<2;i++)assert.equal((await req(`/api/posts/${id}/like`,{method:'PUT',headers:{'content-type':'application/json','x-visitor-id':'fake-'+i},body:JSON.stringify({liked:true,author:'Test Teammate'})})).status,200);
   assert.equal((await(await req('/api/posts')).json())[0].likes,1);
+  assert.deepEqual(await(await req(`/api/posts/${id}/like`)).json(),[{author:'Test Teammate'}]);
+  const commentRequest=(body,route=`/api/posts/${id}/comments`,extra={})=>req(route,{method:'POST',headers:{'content-type':'application/json',...extra},body:JSON.stringify(body)});
+  assert.equal((await commentRequest({author:'Team',body:'   '})).status,400);
+  assert.equal((await commentRequest({author:'Team',body:'x'.repeat(1001)})).status,400);
+  assert.equal((await commentRequest(null)).status,400);
+  assert.equal((await commentRequest({author:'Team',body:'Hello'},'/api/posts/missing/comments')).status,404);
+  assert.equal((await commentRequest({author:'Team',body:'Hello'},undefined,{origin:'https://evil.example'})).status,403);
+  for(let i=0;i<23;i++){
+    const response=await commentRequest({author:'A teammate',body:i===0?'<script>alert(1)</script>':`Comment ${i}`,owner_email:'forged@evil.example'});
+    assert.equal(response.status,201);const result=await response.json();assert.equal(result.owner_email,undefined);
+  }
+  let page=await(await req(`/api/posts/${id}/comments`)).json();assert.equal(page.comments.length,20);assert.equal(page.hasMore,true);assert.equal(page.comments[0].body,'Comment 3');
+  const older=await(await req(`/api/posts/${id}/comments?before=${page.nextCursor}`)).json();assert.equal(older.comments.length,3);assert.equal(older.hasMore,false);assert.equal(older.comments[0].body,'<script>alert(1)</script>');
+  assert.equal((await req(`/api/posts/${id}/comments?before=nope`)).status,400);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM comments WHERE owner_email=?').bind('local-preview@garrison.se').first()).count,23);
+  assert.equal((await(await req('/api/posts')).json())[0].comment_count,23);
+
   assert.equal((await req('/api/posts',{method:'POST',body:payload(),headers:{origin:'https://evil.example'}})).status,403);
   const invalid=payload();invalid.set('photo',new Blob(['not a photo'],{type:'image/jpeg'}),'fake.jpg');assert.equal((await req('/api/posts',{method:'POST',body:invalid})).status,400);
   assert.equal((await db.prepare('SELECT bytes FROM storage_usage WHERE id=1').first()).bytes,image.byteLength);
-  await mf.dispose();mf=start();db=await mf.getD1Database('DB');posts=await(await req('/api/posts')).json();assert.equal(posts.length,1);assert.equal(posts[0].likes,1);assert.equal((await req(posts[0].image)).status,200);
+  await mf.dispose();mf=start();db=await mf.getD1Database('DB');posts=await(await req('/api/posts')).json();assert.equal(posts.length,1);assert.equal(posts[0].likes,1);assert.equal((await req(posts[0].image)).status,200);assert.deepEqual(JSON.parse(posts[0].effect),effect);assert.equal(posts[0].comment_count,23);assert.equal((await(await req(`/api/posts/${id}/comments`)).json()).comments.length,20);assert.deepEqual(await(await req(`/api/posts/${id}/like`)).json(),[{author:'Test Teammate'}]);
   await db.prepare('UPDATE storage_usage SET bytes=7999999999 WHERE id=1').run();assert.equal((await req('/api/posts',{method:'POST',body:payload()})).status,507);
   assert.equal((await(await mf.getR2Bucket('PHOTOS')).list()).objects.length,1);
   await db.prepare('UPDATE storage_usage SET bytes=? WHERE id=1').bind(image.byteLength).run();
