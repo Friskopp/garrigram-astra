@@ -4,14 +4,17 @@ Garrigram uses Workers for the app/API, D1 for posts and likes, R2 Standard for 
 
 ## Current deployment — September 19, 2026
 
-The Worker is deployed at **https://garrigram.garrigram.workers.dev**. It remains locked while Zero Trust onboarding and the Access application are pending. HTTPS checks confirmed HTTP 503 for the homepage, JavaScript, posts API and upload paths; no app content is served before sign-in is configured.
+The Worker is deployed at **https://garrigram.garrigram.workers.dev** with company-only Cloudflare Access sign-in. HTTPS checks confirmed that signed-out requests for the homepage, JavaScript, posts API and upload paths redirect to the Access login page. The browser displays “Log in to Garrigram” with email-code login. A real member's sign-in and first production upload still need an end-to-end check.
 
 - D1 `garrigram`: `2a5b8292-dda7-4b9f-86b7-34af3aad6000`, Western Europe, migration `0001_initial.sql` applied.
 - R2 `garrigram-photos`: Standard storage; public `r2.dev` access confirmed disabled.
-- Initial Worker version: `ac467c45-78d3-42d0-808b-5c14e47dba31`.
+- Current Worker version: `04a8a8ba-edb2-4bc4-ba62-4f0e263c8d3a`.
+- Zero Trust Free team: `garrigram`; issuer `https://garrigram.cloudflareaccess.com`.
+- Access application: `a4b8a989-d4c9-47db-9767-85b9c50e972c`, protecting the `garrigram` Worker's production and preview URLs.
+- Access policy: `4af22bc8-73ca-472a-8738-511e6c92cf4a` (Garrison team). Its single Allow rule includes emails ending in `garrison.se`, verified in the saved dashboard configuration. Only One-time PIN is accepted; application sessions last 24 hours.
 - Wrangler is authorized. No additional API key is needed for Worker, D1 or R2 deployment.
 
-Do not recreate these resources. Continue with Zero Trust setup and the sign-in policy below, then populate the two Access identifiers and run `bun run cf:deploy`. Cloudflare's [Zero Trust onboarding](https://developers.cloudflare.com/cloudflare-one/setup/) requires a team name and payment details even on the Free plan. Enable One-time PIN explicitly for email-code sign-in.
+Do not recreate these resources. Both Access identifiers are configured in `wrangler.jsonc`; use `bun run cf:deploy` for subsequent code changes. Access settings were configured through the signed-in dashboard: Wrangler's OAuth authorization rejected Access writes and some detail reads. Its empty list responses were not reliable evidence that no providers existed. Manage Access through the dashboard unless a token with the appropriate Access permissions is explicitly configured.
 
 ## Account setup
 

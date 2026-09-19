@@ -20,8 +20,8 @@
   }],
   "r2_buckets": [{"binding": "PHOTOS", "bucket_name": "garrigram-photos"}],
   "vars": {
-    "ACCESS_TEAM_DOMAIN": "",
-    "ACCESS_AUD": "",
+    "ACCESS_TEAM_DOMAIN": "https://garrigram.cloudflareaccess.com",
+    "ACCESS_AUD": "06c3b8628a9892391efec6bf2db972ced11ca7f7f033c9e8c7ae969356218876",
     "ALLOWED_EMAIL_DOMAIN": "garrison.se"
   },
   "observability": {"enabled": false}
