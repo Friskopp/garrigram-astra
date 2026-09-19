@@ -19,7 +19,7 @@ Open http://127.0.0.1:4317. The server listens on loopback only by default. `POR
 
 - Feed and map, with mobile bottom navigation.
 - Photo upload, drag and drop, and a camera capture input for supported phones.
-- Captions and remembered display names.
+- Captions and remembered display names. Owners can edit captions and edit/delete their own comments. Deleting a post removes its photo, comments, and likes after confirmation.
 - Optional location: a city, Garrison HQ, map selection, or browser geolocation. The map opens at street zoom near the viewer when permission is granted; otherwise it uses the latest located post or Garrison HQ. “Near me” retries location and “Show all” fits the photo pins.
 - Photo pins open the corresponding moment. Full-size photo viewer.
 - Persistent comments and a list of names behind each like. Likes stored per browser visitor; other tabs pick up changes on focus or every 30 seconds.
@@ -63,6 +63,8 @@ The hosted app uses verified email for reaction identity, keeps photo storage pr
 
 ## Cigarette version
 
-New uploads run through MediaPipe Face Landmarker in the browser. The model and WebAssembly are served from this app; images are not sent to an external image-processing service. Up to 50 detected faces receive a playful cigarette overlay. **ge ciggen en chans** toggles the overlay; the slider or a horizontal swipe reveals it gradually. The resized photo remains intact. Existing posts are not retroactively processed. If no face is detected or processing fails, users can still post the original. Small, obscured, or side-facing faces may be missed.
+New uploads run through MediaPipe Face Landmarker in the browser. The model and WebAssembly are served from this app; images are not sent to an external image-processing service. Up to 50 detected faces receive a playful cigarette overlay. The **ge ciggen en chans** on/off switch toggles between the original and the cigarette overlay. The resized photo remains intact. The button is visible on existing posts too: tapping it generates and saves a missing overlay. If no face is detected or processing fails, users can still post the original. Small, obscured, or side-facing faces may be missed.
 
 Run `npm run prepare:effects` after dependency installation. This copies the pinned `@mediapipe/tasks-vision` runtime and downloads Google’s versioned Face Landmarker model; generated assets are ignored by Git and prepared automatically by deployment. MediaPipe is Apache-2.0 licensed. See [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) for model documentation.
+
+Hosted ownership uses the verified Cloudflare Access email. Changing a display name never grants edit/delete rights. Local ownership uses the browser visitor ID; older local records without an owner remain read-only. Production posts already have email ownership, so these controls also work for existing posts.

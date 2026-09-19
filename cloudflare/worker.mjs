@@ -92,21 +92,59 @@ export function createApp(verifyIdentity = authenticate) {
         }
         if (url.pathname === '/api/session' && method === 'GET') return json({ email: identity.email, hosted: true });
         if (url.pathname === '/api/posts' && method === 'GET') {
-          const { results } = await env.DB.prepare(`SELECT p.id,p.author,p.caption,p.image,p.location,p.lat,p.lng,p.created_at,p.demo,p.effect,
+          const { results } = await env.DB.prepare(`SELECT p.id,p.author,p.caption,p.image,p.location,p.lat,p.lng,p.created_at,p.demo,p.effect,p.owner_email=? AS can_edit,
             (SELECT COUNT(*) FROM likes WHERE post_id=p.id) AS likes,
             (SELECT COUNT(*) FROM comments WHERE post_id=p.id) AS comment_count,
             EXISTS(SELECT 1 FROM likes WHERE post_id=p.id AND visitor=?) AS liked
-            FROM posts p ORDER BY created_at DESC`).bind(identity.email).all();
+            FROM posts p ORDER BY created_at DESC`).bind(identity.email,identity.email).all();
           return json(results);
         }
         if (url.pathname === '/api/posts' && method === 'POST') return await createPost(request, env, identity);
+        const postMatch=url.pathname.match(/^\/api\/posts\/([a-zA-Z0-9-]+)$/);
+        if(postMatch&&['PATCH','DELETE'].includes(method)) {
+          const post=await env.DB.prepare('SELECT owner_email,image FROM posts WHERE id=?').bind(postMatch[1]).first();
+          if(!post)fail('Moment not found.',404);
+          if(post.owner_email!==identity.email)fail('You can only change your own posts.',403);
+          if(method==='PATCH') {
+            let body;try{body=await (await limitedRequest(request,8192)).json();}catch(error){if(error.status)throw error;fail('Invalid caption.');}
+            if(typeof body?.caption!=='string'||body.caption.length>1000)fail('Captions can be up to 1,000 characters.');
+            await env.DB.prepare('UPDATE posts SET caption=? WHERE id=? AND owner_email=?').bind(body.caption.trim(),postMatch[1],identity.email).run();
+            return json({caption:body.caption.trim()});
+          }
+          await env.PHOTOS.delete(post.image.slice('/uploads/'.length));
+          await env.DB.prepare('DELETE FROM posts WHERE id=? AND owner_email=?').bind(postMatch[1],identity.email).run();
+          return json({deleted:true});
+        }
+        const commentItem=url.pathname.match(/^\/api\/posts\/([a-zA-Z0-9-]+)\/comments\/(\d+)$/);
+        if(commentItem&&['PATCH','DELETE'].includes(method)) {
+          const comment=await env.DB.prepare('SELECT owner_email FROM comments WHERE id=? AND post_id=?').bind(Number(commentItem[2]),commentItem[1]).first();
+          if(!comment)fail('Comment not found.',404);
+          if(comment.owner_email!==identity.email)fail('You can only change your own comments.',403);
+          if(method==='PATCH') {
+            let body;try{body=await (await limitedRequest(request,8192)).json();}catch(error){if(error.status)throw error;fail('Invalid comment.');}
+            if(typeof body?.body!=='string'||!body.body.trim()||body.body.length>1000)fail('Write a comment between 1 and 1,000 characters.');
+            await env.DB.prepare('UPDATE comments SET body=? WHERE id=? AND post_id=? AND owner_email=?').bind(body.body.trim(),Number(commentItem[2]),commentItem[1],identity.email).run();
+            return json({body:body.body.trim()});
+          }
+          await env.DB.prepare('DELETE FROM comments WHERE id=? AND post_id=? AND owner_email=?').bind(Number(commentItem[2]),commentItem[1],identity.email).run();
+          return json({deleted:true});
+        }
+        const effectMatch=url.pathname.match(/^\/api\/posts\/([a-zA-Z0-9-]+)\/effect$/);
+        if(effectMatch&&method==='PUT') {
+          let body;try{body=await (await limitedRequest(request,16384)).json();}catch(error){if(error.status)throw error;fail('Invalid photo effect.');}
+          let effect;try{effect=validateEffect(body?.effect);}catch(error){fail(error.message);}
+          if(!effect)fail('No faces found in this photo.');
+          const row=await env.DB.prepare('UPDATE posts SET effect=COALESCE(effect,?) WHERE id=? RETURNING effect').bind(JSON.stringify(effect),effectMatch[1]).first();
+          if(!row)fail('Moment not found.',404);
+          return json({effect:JSON.parse(row.effect)});
+        }
         const comment = url.pathname.match(/^\/api\/posts\/([a-zA-Z0-9-]+)\/comments$/);
         if (comment && ['GET','POST'].includes(method)) {
           if (!await env.DB.prepare('SELECT id FROM posts WHERE id=?').bind(comment[1]).first()) fail('Moment not found.',404);
           if (method === 'GET') {
             const before=url.searchParams.get('before');
             if(before!==null && (!/^\d+$/.test(before)||!Number.isSafeInteger(Number(before))||Number(before)<1)) fail('Invalid comment page.');
-            const {results}=await env.DB.prepare('SELECT id,author,body,created_at FROM comments WHERE post_id=? AND id<? ORDER BY id DESC LIMIT 21').bind(comment[1],before?Number(before):Number.MAX_SAFE_INTEGER).all();
+            const {results}=await env.DB.prepare('SELECT id,author,body,created_at,owner_email=? AS can_edit FROM comments WHERE post_id=? AND id<? ORDER BY id DESC LIMIT 21').bind(identity.email,comment[1],before?Number(before):Number.MAX_SAFE_INTEGER).all();
             const page=results.slice(0,20);
             return json({comments:page.reverse(),hasMore:results.length>20,nextCursor:page[0]?.id||null});
           }
@@ -117,7 +155,7 @@ export function createApp(verifyIdentity = authenticate) {
           if(typeof body?.body!=='string'||!body.body.trim()||body.body.length>1000) fail('Write a comment between 1 and 1,000 characters.');
           const created_at=new Date().toISOString();
           const result=await env.DB.prepare('INSERT INTO comments (post_id,author,owner_email,body,created_at) VALUES (?,?,?,?,?) RETURNING id,author,body,created_at').bind(comment[1],body.author.trim(),identity.email,body.body.trim(),created_at).first();
-          return json(result,201);
+          return json({...result,can_edit:true},201);
         }
         const like = url.pathname.match(/^\/api\/posts\/([a-zA-Z0-9-]+)\/like$/);
         if (like && method === 'GET') {

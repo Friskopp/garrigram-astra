@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY AUTOINCREMENT, post_
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id,id DESC);`);
 if(!db.prepare('PRAGMA table_info(likes)').all().some(column=>column.name==='author')) db.exec("ALTER TABLE likes ADD COLUMN author TEXT NOT NULL DEFAULT 'A teammate'");
 if(!db.prepare('PRAGMA table_info(posts)').all().some(column=>column.name==='effect')) db.exec('ALTER TABLE posts ADD COLUMN effect TEXT');
+for(const table of ['posts','comments'])if(!db.prepare(`PRAGMA table_info(${table})`).all().some(column=>column.name==='owner_visitor'))db.exec(`ALTER TABLE ${table} ADD COLUMN owner_visitor TEXT`);
 if(process.env.SEED_DEMO !== '0') {
   const samples=JSON.parse(await readFile(path.join(root,'seed.json'),'utf8'));
   const insert=db.prepare('INSERT OR IGNORE INTO posts (id,author,caption,image,location,lat,lng,created_at,demo) VALUES (?,?,?,?,?,?,?,?,1)');
@@ -54,10 +55,10 @@ export const server = http.createServer(async (req,res) => {
     if(url.pathname==='/api/session' && req.method==='GET') return json(res,200,{hosted:false});
     if(url.pathname==='/api/posts' && req.method==='GET') {
       const who=visitor(req);
-      return json(res,200,db.prepare(`SELECT p.*, (SELECT COUNT(*) FROM comments WHERE post_id=p.id) AS comment_count, (SELECT COUNT(*) FROM likes WHERE post_id=p.id) AS likes, EXISTS(SELECT 1 FROM likes WHERE post_id=p.id AND visitor=?) AS liked FROM posts p ORDER BY demo ASC, created_at DESC`).all(who));
+      return json(res,200,db.prepare(`SELECT p.*, p.owner_visitor=? AS can_edit, (SELECT COUNT(*) FROM comments WHERE post_id=p.id) AS comment_count, (SELECT COUNT(*) FROM likes WHERE post_id=p.id) AS likes, EXISTS(SELECT 1 FROM likes WHERE post_id=p.id AND visitor=?) AS liked FROM posts p ORDER BY demo ASC, created_at DESC`).all(who,who).map(({owner_visitor,...post})=>post));
     }
     if(url.pathname==='/api/posts' && req.method==='POST') {
-      visitor(req); const body=await readPost(req);
+      const who=visitor(req); const body=await readPost(req);
       if(typeof body.author!=='string'||!body.author.trim()||body.author.length>60) fail('Please enter a name (up to 60 characters).');
       if(typeof body.caption!=='string'||body.caption.length>1000) fail('Captions can be up to 1,000 characters.');
       if(typeof body.image!=='string'||!/^data:image\/(jpeg|png|webp);base64,/.test(body.image)) fail('Please choose a JPG, PNG or WebP photo.');
@@ -69,18 +70,50 @@ export const server = http.createServer(async (req,res) => {
       let effect;try{effect=validateEffect(body.effect);}catch(e){fail(e.message);}
       const id=randomUUID(); const filename=`${id}.${ext}`;
       await writeFile(path.join(dataDir,'uploads',filename),bytes,{flag:'wx'});
-      try { db.prepare('INSERT INTO posts (id,author,caption,image,location,lat,lng,created_at,effect) VALUES (?,?,?,?,?,?,?,?,?)').run(id,body.author.trim(),body.caption.trim(),`/uploads/${filename}`,hasLocation?body.location.trim():null,hasLocation?body.lat:null,hasLocation?body.lng:null,new Date().toISOString(),effect?JSON.stringify(effect):null); }
+      try { db.prepare('INSERT INTO posts (id,author,caption,image,location,lat,lng,created_at,effect,owner_visitor) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id,body.author.trim(),body.caption.trim(),`/uploads/${filename}`,hasLocation?body.location.trim():null,hasLocation?body.lat:null,hasLocation?body.lng:null,new Date().toISOString(),effect?JSON.stringify(effect):null,who); }
       catch(e) { await unlink(path.join(dataDir,'uploads',filename)); throw e; }
       return json(res,201,{id});
     }
+    const postMatch=url.pathname.match(/^\/api\/posts\/([a-zA-Z0-9-]+)$/);
+    if(postMatch&&['PATCH','DELETE'].includes(req.method)) {
+      const who=visitor(req),post=db.prepare('SELECT owner_visitor,image FROM posts WHERE id=?').get(postMatch[1]);
+      if(!post)return json(res,404,{error:'Moment not found.'});
+      if(post.owner_visitor!==who)return json(res,403,{error:'You can only change your own posts.'});
+      if(req.method==='PATCH') {
+        const body=await readBody(req);if(typeof body?.caption!=='string'||body.caption.length>1000)fail('Captions can be up to 1,000 characters.');
+        db.prepare('UPDATE posts SET caption=? WHERE id=?').run(body.caption.trim(),postMatch[1]);return json(res,200,{caption:body.caption.trim()});
+      }
+      try{await unlink(path.join(dataDir,post.image));}catch(error){if(error.code!=='ENOENT')throw error;}
+      db.prepare('DELETE FROM posts WHERE id=?').run(postMatch[1]);return json(res,200,{deleted:true});
+    }
+    const commentItem=url.pathname.match(/^\/api\/posts\/([a-zA-Z0-9-]+)\/comments\/(\d+)$/);
+    if(commentItem&&['PATCH','DELETE'].includes(req.method)) {
+      const who=visitor(req),comment=db.prepare('SELECT owner_visitor FROM comments WHERE id=? AND post_id=?').get(Number(commentItem[2]),commentItem[1]);
+      if(!comment)return json(res,404,{error:'Comment not found.'});
+      if(comment.owner_visitor!==who)return json(res,403,{error:'You can only change your own comments.'});
+      if(req.method==='PATCH') {
+        const body=await readBody(req);if(typeof body?.body!=='string'||!body.body.trim()||body.body.length>1000)fail('Write a comment between 1 and 1,000 characters.');
+        db.prepare('UPDATE comments SET body=? WHERE id=?').run(body.body.trim(),Number(commentItem[2]));return json(res,200,{body:body.body.trim()});
+      }
+      db.prepare('DELETE FROM comments WHERE id=?').run(Number(commentItem[2]));return json(res,200,{deleted:true});
+    }
+    const effectMatch=url.pathname.match(/^\/api\/posts\/([a-zA-Z0-9-]+)\/effect$/);
+    if(effectMatch&&req.method==='PUT') {
+      visitor(req);const body=await readBody(req);let effect;
+      try{effect=validateEffect(body?.effect);}catch(error){fail(error.message);}
+      if(!effect)fail('No faces found in this photo.');
+      const row=db.prepare('UPDATE posts SET effect=COALESCE(effect,?) WHERE id=? RETURNING effect').get(JSON.stringify(effect),effectMatch[1]);
+      if(!row)return json(res,404,{error:'Moment not found.'});
+      return json(res,200,{effect:JSON.parse(row.effect)});
+    }
     const commentMatch=url.pathname.match(/^\/api\/posts\/([a-zA-Z0-9-]+)\/comments$/);
     if(commentMatch && ['GET','POST'].includes(req.method)) {
-      visitor(req);
+      const who=visitor(req);
       if(!db.prepare('SELECT id FROM posts WHERE id=?').get(commentMatch[1])) return json(res,404,{error:'Moment not found.'});
       if(req.method==='GET') {
         const before=url.searchParams.get('before');
         if(before!==null && (!/^\d+$/.test(before)||!Number.isSafeInteger(Number(before))||Number(before)<1)) fail('Invalid comment page.');
-        const rows=db.prepare('SELECT id,author,body,created_at FROM comments WHERE post_id=? AND id<? ORDER BY id DESC LIMIT 21').all(commentMatch[1],before?Number(before):Number.MAX_SAFE_INTEGER);
+        const rows=db.prepare('SELECT id,author,body,created_at,owner_visitor=? AS can_edit FROM comments WHERE post_id=? AND id<? ORDER BY id DESC LIMIT 21').all(who,commentMatch[1],before?Number(before):Number.MAX_SAFE_INTEGER);
         const page=rows.slice(0,20);
         return json(res,200,{comments:page.reverse(),hasMore:rows.length>20,nextCursor:page[0]?.id||null});
       }
@@ -88,8 +121,8 @@ export const server = http.createServer(async (req,res) => {
       if(typeof body?.author!=='string'||!body.author.trim()||body.author.length>60) fail('Please enter a name (up to 60 characters).');
       if(typeof body?.body!=='string'||!body.body.trim()||body.body.length>1000) fail('Write a comment between 1 and 1,000 characters.');
       const created_at=new Date().toISOString();
-      const result=db.prepare('INSERT INTO comments (post_id,author,body,created_at) VALUES (?,?,?,?)').run(commentMatch[1],body.author.trim(),body.body.trim(),created_at);
-      return json(res,201,{id:Number(result.lastInsertRowid),author:body.author.trim(),body:body.body.trim(),created_at});
+      const result=db.prepare('INSERT INTO comments (post_id,author,body,created_at,owner_visitor) VALUES (?,?,?,?,?)').run(commentMatch[1],body.author.trim(),body.body.trim(),created_at,who);
+      return json(res,201,{id:Number(result.lastInsertRowid),author:body.author.trim(),body:body.body.trim(),created_at,can_edit:true});
     }
     const likeMatch=url.pathname.match(/^\/api\/posts\/([a-zA-Z0-9-]+)\/like$/);
     if(likeMatch&&req.method==='GET') {

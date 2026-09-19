@@ -8,7 +8,7 @@ The Worker is deployed at **https://garrigram.garrigram.workers.dev** with compa
 
 - D1 `garrigram`: `2a5b8292-dda7-4b9f-86b7-34af3aad6000`, Western Europe, migrations `0001` through `0004` applied.
 - R2 `garrigram-photos`: Standard storage; public `r2.dev` access confirmed disabled.
-- Current Worker version: `fcf3004f-c6b8-4450-b9c1-8939de8d369f`.
+- Current Worker version: `d131a556-89bf-48b4-98f5-1da49ecab7eb`.
 - Zero Trust Free team: `garrigram`; issuer `https://garrigram.cloudflareaccess.com`.
 - Access application: `a4b8a989-d4c9-47db-9767-85b9c50e972c`, protecting the `garrigram` Worker's production and preview URLs.
 - Access policy: `4af22bc8-73ca-472a-8738-511e6c92cf4a` (Garrison team). Its single Allow rule includes emails ending in `garrison.se`, verified in the saved dashboard configuration. Only One-time PIN is accepted; application sessions last 24 hours.
@@ -103,12 +103,16 @@ Official references: [Workers pricing](https://developers.cloudflare.com/workers
 
 ## Public welcome and login branding
 
-`wrangler.welcome.jsonc` deploys a static public welcome page at **https://go.garrigram.workers.dev** using `bun run cf:welcome`. This shorter share URL has Open Graph/Twitter metadata and a 1200×630 preview image. Its Join the team link enters the protected app on the original Worker URL. It has no database or photo bindings.
+`wrangler.welcome.jsonc` deploys a static public welcome page at **https://go.garrigram.workers.dev** using `bun run cf:welcome`. This shorter share URL has Open Graph/Twitter metadata and a 1200×630 preview image. Its Sign in link enters the protected app on the original Worker URL. It has no database or photo bindings.
 
-The Access login uses the supplied Garrison logo, charcoal background and company copy. Its logo is served publicly by the separate `garrigram-brand` Worker (`wrangler.brand.jsonc`). Cloudflare’s email form/button and Access heading retain provider styling. Brand content is in `cloudflare/branding/`; never put private files there.
+The Access login uses the supplied Garrison logo, charcoal background and only the company-email sign-in instruction. Its logo is served publicly by the separate `garrigram-brand` Worker (`wrangler.brand.jsonc`). Cloudflare’s email form/button and Access heading retain provider styling. Brand content is in `cloudflare/branding/`; never put private files there.
 
 For schema changes, run `bun run cf:migrate` before `bun run cf:deploy`. The current additions are migration 0002 (comments), 0003 (like display names), and 0004 (photo overlays). Old likes have the fallback name “A teammate”; new likes store the chosen display name. Names are user-entered labels; reaction ownership remains the verified email.
 
 Release verification: five automated tests passed (local persistence, Access JWT checks, unauthenticated denial, Cloudflare D1/R2 persistence, overlay validation). Browser checks confirmed face detection on a public portrait fixture, original/overlay toggling, comment submission, named-like dialog, closer map layout, branded Access login and public welcome page. Production signed-out checks for the app, assets, APIs and photo paths redirect to Access; welcome HTML and preview PNG return HTTP 200. The new authenticated features were tested locally; the production browser was signed out at deployment.
 
-Post-release read-only D1 verification found all four migrations applied and five production posts totaling 4,190,044 photo bytes. Production data was not modified by the UI tests. Welcome Worker version: `01f9826f-20d0-482d-af6a-cf6503f7e172`.
+Post-release read-only D1 verification found all four migrations applied and five production posts totaling 4,190,044 photo bytes. Production data was not modified by the UI tests. Welcome Worker version: `4b393a6b-ad67-49f2-916e-42589dca257c`.
+
+September 19 follow-up: simplified the public entry page and Access login copy. The cigarette control now appears on every post and generates a missing overlay on demand. Added owner-only caption edits, post deletion, and comment edits/deletion. APIs enforce verified-email ownership; post deletion deletes the private R2 object before removing the database record (foreign-key cascades remove comments/likes and the existing trigger releases storage accounting). A failed deletion can be retried; R2 and D1 are separate services. No new production migration is needed. Browser checks covered generation on an existing photo, caption/comment edits and both confirmation dialogs; isolated tests cover cross-user denial, cascading deletion and R2 cleanup.
+
+The cigarette control is now a two-state accessible switch, labelled “ge ciggen en chans”, with no slider or partial swipe state. Browser verification confirmed off → on → off using click and keyboard, and zero slider controls.

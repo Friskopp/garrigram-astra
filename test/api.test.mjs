@@ -24,6 +24,11 @@ test('photo upload, feed, reaction isolation, validation, and restart persistenc
   assert.equal((await request('/api/posts','POST',payload,'test-visitor-one',{origin:'https://other.example'})).status,403);
   const created=await request('/api/posts','POST',payload);assert.equal(created.status,201);const {id}=await created.json();
   let rows=await(await request('/api/posts')).json();assert.equal(rows.length,1);assert.equal(rows[0].caption,payload.caption);assert.equal(rows[0].lat,payload.lat);
+  const replacement={...effect,faces:[{x:400,y:250,angle:5,length:60}]};
+  assert.equal((await request(`/api/posts/${id}/effect`,'PUT',{effect:replacement})).status,200);
+  assert.deepEqual(JSON.parse((await(await request('/api/posts')).json())[0].effect),effect); // Existing variant stays stable.
+  assert.equal((await request(`/api/posts/${id}/effect`,'PUT',{effect:{bad:true}})).status,400);
+  assert.equal((await request('/api/posts/missing/effect','PUT',{effect})).status,404);
   const photo=await fetch(base+rows[0].image);assert.equal(photo.status,200);assert.equal(photo.headers.get('content-type'),'image/jpeg');assert.ok((await photo.arrayBuffer()).byteLength>1000);
   await request(`/api/posts/${id}/like`,'PUT',{liked:true});await request(`/api/posts/${id}/like`,'PUT',{liked:true});
   rows=await(await request('/api/posts')).json();assert.equal(rows[0].likes,1);assert.equal(rows[0].liked,1);
@@ -43,6 +48,22 @@ test('photo upload, feed, reaction isolation, validation, and restart persistenc
   await request(`/api/posts/${id}/like`,'PUT',{liked:false});assert.equal((await(await request('/api/posts')).json())[0].likes,0);
   assert.equal((await request('/api/posts/missing-id/like','PUT',{liked:true})).status,404);
   const form=new FormData();form.set('author','Multipart tester');form.set('caption','Browser upload format');form.set('photo',new Blob([await readFile('public/images/fika.jpg')],{type:'image/jpeg'}),'fika.jpg');
-  assert.equal((await fetch(base+'/api/posts',{method:'POST',headers:{'x-visitor-id':'test-visitor-one'},body:form})).status,201);
+  const legacy=await fetch(base+'/api/posts',{method:'POST',headers:{'x-visitor-id':'test-visitor-one'},body:form});assert.equal(legacy.status,201);const legacyId=(await legacy.json()).id;
+  assert.equal((await request(`/api/posts/${legacyId}/effect`,'PUT',{effect})).status,200);
+  await stop();await start();
+  assert.deepEqual(JSON.parse((await(await request('/api/posts')).json()).find(p=>p.id===legacyId).effect),effect);
+
+  const owned=(await(await request('/api/posts')).json()).find(p=>p.id===id);assert.equal(owned.can_edit,1);assert.equal(owned.owner_visitor,undefined);
+  assert.equal((await request(`/api/posts/${id}`,'PATCH',{caption:'Edited'},'test-visitor-two')).status,403);
+  assert.equal((await request(`/api/posts/${id}`,'DELETE',undefined,'test-visitor-two')).status,403);
+  assert.equal((await request(`/api/posts/${id}`,'PATCH',{caption:'Edited'})).status,200);
+  const cid=(await(await request(`/api/posts/${id}/comments`)).json()).comments[0].id;
+  assert.equal((await request(`/api/posts/${id}/comments/${cid}`,'PATCH',{body:'Nope'},'test-visitor-two')).status,403);
+  assert.equal((await request(`/api/posts/${id}/comments/${cid}`,'DELETE',undefined,'test-visitor-two')).status,403);
+  assert.equal((await request(`/api/posts/${id}/comments/${cid}`,'PATCH',{body:'Updated'})).status,200);
+  assert.equal((await request(`/api/posts/${id}/comments/${cid}`,'DELETE')).status,200);
+  assert.equal((await request(`/api/posts/${id}`,'DELETE')).status,200);
+  assert.equal((await fetch(base+owned.image)).status,404);
+  assert.equal((await request(`/api/posts/${id}/comments`)).status,404);
  }finally{if(child?.exitCode===null)await stop();await rm(data,{recursive:true,force:true});}
 });

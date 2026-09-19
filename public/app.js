@@ -15,6 +15,7 @@ try { visitorId=localStorage.getItem('garrigram-visitor')||crypto.randomUUID(); 
 let posts=[],map,pickerMap,pickerMarker,markers=[],selectedLocation=null,photoData=null,photoEffect=null,photoTask=0,toastTimer,refreshing=false;
 const commentStates=new Map();
 const effectLevels=new Map();
+const effectJobs=new Map();
 
 const places={office:{location:'Garrison HQ · Södermalmstorg',lat:59.3198,lng:18.0716},stockholm:{location:'Stockholm',lat:59.3293,lng:18.0686},gothenburg:{location:'Gothenburg',lat:57.7089,lng:11.9746},malmo:{location:'Malmö',lat:55.605,lng:13.0038}};
 const credits={'demo-stockholm':['Elijah Cobb','https://unsplash.com/photos/EAe_AWX92ds'],'demo-fika':['Mikael Stenberg','https://unsplash.com/photos/QL9AkXhjJuA'],'demo-archipelago':['Max van den Oetelaar','https://unsplash.com/photos/UTAoG0oeXew']};
@@ -26,36 +27,50 @@ $('profile-form').onsubmit=e=>{e.preventDefault();const name=$('display-name').v
 function toast(message){clearTimeout(toastTimer);$('toast').textContent=message;$('toast').hidden=false;toastTimer=setTimeout(()=>$('toast').hidden=true,4500);}
 async function api(url,options={}){const headers={'X-Visitor-Id':visitorId,...options.headers};if(!(options.body instanceof FormData))headers['Content-Type']='application/json';let response;try{response=await fetch(url,{...options,headers});}catch{throw new Error('Couldn’t connect. Check your connection, or sign in again in a new tab. Your draft is still here.');}if(!response.headers.get('content-type')?.includes('application/json'))throw new Error('Please sign in again in a new tab, then retry. Your draft is still here.');const body=await response.json();if(!response.ok)throw new Error(body.error||'Something went wrong. Please try again.');return body;}
 function relativeDate(date){const days=Math.floor((Date.now()-new Date(date).getTime())/86400000);if(days===0)return'Today';if(days===1)return'Yesterday';return new Date(date).toLocaleDateString('en-GB',{day:'numeric',month:'short'});}
-function card(post){const credit=credits[post.id];return `<article class="post" data-post="${escapeHTML(post.id)}"><header class="post-header"><span class="avatar" style="background:${post.demo?'#414937':'#344a40'}">${escapeHTML(initials(post.author))}</span><div><div class="post-author">${escapeHTML(post.author)}</div><div class="post-meta"><span>${post.demo?'A little inspiration':escapeHTML(relativeDate(post.created_at))}</span>${post.location?`<span>·</span><span>${escapeHTML(post.location.split(' · ')[0])}</span>`:''}</div></div>${post.demo?'<span class="demo-label">EXAMPLE</span>':''}</header>${photoMarkup(post)}<div class="post-content"><div class="post-actions"><button class="like-button ${post.liked?'liked':''}" data-action="like" aria-label="${post.liked?'Unlike':'Like'} moment by ${escapeHTML(post.author)}" aria-pressed="${Boolean(post.liked)}">${icon('heart')}<span>${post.liked?'Liked':'Like'}</span></button><button class="like-count text-button" data-action="likers" aria-label="Who liked this moment" ${post.likes?'':'hidden'}>${post.likes} ${post.likes===1?'like':'likes'}</button><button class="comment-toggle text-button" data-action="comments" aria-expanded="${Boolean(commentStates.get(post.id)?.open)}">${icon('comment')}<span>${commentLabel(post)}</span></button>${post.location?`<button class="location-link" data-action="map">${icon('pin')}${escapeHTML(post.location.split(' · ')[0])}</button>`:''}</div>${post.caption?`<p class="post-caption">${escapeHTML(post.caption)}</p>`:''}<div class="post-footer"><span>${post.demo?'EXAMPLE MOMENT':escapeHTML(new Date(post.created_at).toLocaleDateString('en-GB',{day:'numeric',month:'long'})).toUpperCase()}</span>${credit?`<a href="${credit[1]}" target="_blank" rel="noopener noreferrer">PHOTO: ${escapeHTML(credit[0].toUpperCase())} ↗</a>`:`<time datetime="${escapeHTML(post.created_at)}" title="${escapeHTML(new Date(post.created_at).toLocaleString())}">${escapeHTML(new Date(post.created_at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}))}</time>`}</div><div class="comments-container">${commentsMarkup(post)}</div></div></article>`;}
+function card(post){const credit=credits[post.id];return `<article class="post" data-post="${escapeHTML(post.id)}"><header class="post-header"><span class="avatar" style="background:${post.demo?'#414937':'#344a40'}">${escapeHTML(initials(post.author))}</span><div><div class="post-author">${escapeHTML(post.author)}</div><div class="post-meta"><span>${post.demo?'A little inspiration':escapeHTML(relativeDate(post.created_at))}</span>${post.location?`<span>·</span><span>${escapeHTML(post.location.split(' · ')[0])}</span>`:''}</div></div>${post.demo?'<span class="demo-label">EXAMPLE</span>':''}${post.can_edit?'<div class="owner-actions"><button class="text-button" data-action="edit-post" aria-label="Edit post">Edit</button><button class="text-button" data-action="delete-post" aria-label="Delete post">Delete</button></div>':''}</header>${photoMarkup(post)}<div class="post-content"><div class="post-actions"><button class="like-button ${post.liked?'liked':''}" data-action="like" aria-label="${post.liked?'Unlike':'Like'} moment by ${escapeHTML(post.author)}" aria-pressed="${Boolean(post.liked)}">${icon('heart')}<span>${post.liked?'Liked':'Like'}</span></button><button class="like-count text-button" data-action="likers" aria-label="Who liked this moment" ${post.likes?'':'hidden'}>${post.likes} ${post.likes===1?'like':'likes'}</button><button class="comment-toggle text-button" data-action="comments" aria-expanded="${Boolean(commentStates.get(post.id)?.open)}">${icon('comment')}<span>${commentLabel(post)}</span></button>${post.location?`<button class="location-link" data-action="map">${icon('pin')}${escapeHTML(post.location.split(' · ')[0])}</button>`:''}</div>${post.caption?`<p class="post-caption">${escapeHTML(post.caption)}</p>`:''}<div class="post-footer"><span>${post.demo?'EXAMPLE MOMENT':escapeHTML(new Date(post.created_at).toLocaleDateString('en-GB',{day:'numeric',month:'long'})).toUpperCase()}</span>${credit?`<a href="${credit[1]}" target="_blank" rel="noopener noreferrer">PHOTO: ${escapeHTML(credit[0].toUpperCase())} ↗</a>`:`<time datetime="${escapeHTML(post.created_at)}" title="${escapeHTML(new Date(post.created_at).toLocaleString())}">${escapeHTML(new Date(post.created_at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}))}</time>`}</div><div class="comments-container">${commentsMarkup(post)}</div></div></article>`;}
 function photoMarkup(post,full=false){
-  const svg=effectSvg(post.effect).replace('xMidYMid slice',full?'xMidYMid meet':'xMidYMid slice'),level=effectLevels.get(post.id)||0;
+  const svg=effectSvg(post.effect).replace('xMidYMid slice',full?'xMidYMid meet':'xMidYMid slice'),level=effectLevels.get(post.id)||0,job=effectJobs.get(post.id);
   const image=`<img class="post-photo" src="${escapeHTML(post.image)}" alt="${escapeHTML(post.caption||'Photo shared by '+post.author)}" ${full?'':'loading="lazy"'}>`;
-  return `<div class="photo-stage ${svg?'has-effect':''} ${full?'full-stage':''}" data-effect-id="${post.id}">${full?image:`<button class="photo-button" data-action="photo" aria-label="View photo by ${escapeHTML(post.author)}">${image}</button>`}${svg?`<div class="photo-effect" style="clip-path:inset(0 ${100-level}% 0 0)">${svg}</div><span class="effect-status">${level?'Cig version':'Original'}</span>`:''}</div>${svg?`<div class="effect-controls" data-effect-id="${post.id}"><button type="button" class="effect-toggle text-button" data-action="effect" aria-pressed="${level>0}">ge ciggen en chans</button><label><span class="sr-only">Swipe between original and cigarette version</span><input class="effect-slider" type="range" min="0" max="100" value="${level}" aria-label="Cigarette version" aria-valuetext="${level}% cigarette version"></label></div>`:''}`;
+  return `<div class="photo-stage ${svg?'has-effect':''} ${full?'full-stage':''}" data-effect-id="${post.id}">${full?image:`<button class="photo-button" data-action="photo" aria-label="View photo by ${escapeHTML(post.author)}">${image}</button>`}${svg?`<div class="photo-effect" style="clip-path:inset(0 ${100-level}% 0 0)">${svg}</div><span class="effect-status">${level?'Cig version':'Original'}</span>`:''}</div><div class="effect-controls" data-effect-id="${post.id}"><button type="button" class="effect-toggle text-button" data-action="effect" role="switch" aria-checked="${level>0}" ${job?.busy?'disabled':''}>ge ciggen en chans</button>${!svg?`<span class="effect-feedback" role="status">${escapeHTML(job?.message||'')}</span>`:''}</div>`;
 }
+function refreshPhoto(post){
+  document.querySelectorAll(`.photo-stage[data-effect-id="${post.id}"]`).forEach(stage=>{
+    const controls=stage.nextElementSibling;
+    controls?.remove();stage.outerHTML=photoMarkup(post,stage.classList.contains('full-stage'));
+  });
+}
+async function togglePhotoEffect(id){
+  const post=posts.find(p=>p.id===id);if(!post||effectJobs.get(id)?.busy)return;
+  if(effectSvg(post.effect)){setEffectLevel(id,(effectLevels.get(id)||0)>0?0:100);return;}
+  effectJobs.set(id,{busy:true,message:'Making cig version…'});refreshPhoto(post);
+  try{
+    const img=new Image();img.src=post.image;await img.decode();
+    const scale=Math.min(1,2400/Math.max(img.naturalWidth,img.naturalHeight));
+    const canvas=document.createElement('canvas');canvas.width=Math.round(img.naturalWidth*scale);canvas.height=Math.round(img.naturalHeight*scale);canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
+    const {detectCigarettes}=await import('./effect-processor.mjs');
+    const effect=await Promise.race([detectCigarettes(canvas),new Promise((_,reject)=>setTimeout(()=>reject(new Error('Processing timed out. Tap to retry.')),30000))]);
+    if(!effect)throw new Error('No faces found. Try a clearer, front-facing photo.');
+    const saved=await api(`/api/posts/${id}/effect`,{method:'PUT',body:JSON.stringify({effect})});
+    post.effect=saved.effect;const current=posts.find(p=>p.id===id);if(current)current.effect=saved.effect;
+    effectLevels.set(id,100);effectJobs.delete(id);
+  }catch(error){effectJobs.set(id,{busy:false,message:error.message||'Couldn’t make the cig version. Tap to retry.'});}
+  refreshPhoto(post);
+}
+
 function setEffectLevel(id,value){
   const level=Math.max(0,Math.min(100,value));effectLevels.set(id,level);
   document.querySelectorAll(`[data-effect-id="${id}"]`).forEach(el=>{
     const overlay=el.querySelector('.photo-effect');if(overlay)overlay.style.clipPath=`inset(0 ${100-level}% 0 0)`;
     const status=el.querySelector('.effect-status');if(status)status.textContent=level?'Cig version':'Original';
-    const slider=el.querySelector('.effect-slider');if(slider){slider.value=level;slider.setAttribute('aria-valuetext',`${level}% cigarette version`);}
-    el.querySelector('.effect-toggle')?.setAttribute('aria-pressed',String(level>0));
+    el.querySelector('.effect-toggle')?.setAttribute('aria-checked',String(level>0));
   });
 }
-document.addEventListener('input',event=>{if(event.target.matches('.effect-slider'))setEffectLevel(event.target.closest('[data-effect-id]').dataset.effectId,Number(event.target.value));});
-document.addEventListener('click',event=>{const button=event.target.closest('.effect-toggle');if(button){const id=button.closest('[data-effect-id]').dataset.effectId;setEffectLevel(id,(effectLevels.get(id)||0)>0?0:100);}});
-let swipe=null,suppressPhotoClickUntil=0;
-document.addEventListener('pointerdown',event=>{const stage=event.target.closest('.photo-stage.has-effect');if(stage&&event.isPrimary)swipe={stage,x:event.clientX,y:event.clientY,moved:false};});
-document.addEventListener('pointermove',event=>{
-  if(!swipe)return;const dx=event.clientX-swipe.x,dy=event.clientY-swipe.y;
-  if(!swipe.moved&&Math.abs(dy)>Math.abs(dx)&&Math.abs(dy)>10){swipe=null;return;}
-  if(Math.abs(dx)>12||swipe.moved){swipe.moved=true;const bounds=swipe.stage.getBoundingClientRect();setEffectLevel(swipe.stage.dataset.effectId,100*(event.clientX-bounds.left)/bounds.width);}
-});
-document.addEventListener('pointerup',()=>{if(swipe?.moved)suppressPhotoClickUntil=Date.now()+400;swipe=null;});
-document.addEventListener('pointercancel',()=>{swipe=null;});
+document.addEventListener('click',event=>{const button=event.target.closest('.effect-toggle');if(button)void togglePhotoEffect(button.closest('[data-effect-id]').dataset.effectId);});
 function renderFeed(){ $('moment-count').textContent=`${posts.length} moment${posts.length===1?'':'s'}`; $('sample-note').hidden=!posts.some(p=>p.demo); if(posts.length)$('feed').innerHTML=posts.map(card).join(''); else {$('feed').innerHTML=`<div class="empty-state">${icon('camera')}<h3>Your everyday belongs here.</h3><p>Share a photo from the office, a coffee break,<br>or wherever the day takes you.</p><button class="primary" id="empty-share">Share the first moment</button></div>`;$('empty-share').onclick=openCompose;} }
 async function loadPosts({quiet=false}={}){if(refreshing||(quiet&&document.activeElement?.closest('.comment-form')))return;refreshing=true;try{posts=await api('/api/posts');$('status').textContent='';renderFeed();if(map)renderMarkers();}catch(e){if(!quiet){$('status').textContent='We couldn’t load the feed. '+e.message+' ';const retry=document.createElement('button');retry.className='text-button';retry.textContent='Try again';retry.onclick=()=>loadPosts();$('status').append(retry);}}finally{refreshing=false;}}
 async function postAction(e){const button=e.target.closest('[data-action]');if(!button)return;const article=button.closest('[data-post]');const post=posts.find(p=>p.id===article?.dataset.post);if(!post)return;
-  if(button.dataset.action==='photo'){if(Date.now()<suppressPhotoClickUntil)return;$('full-photo-view').innerHTML=photoMarkup(post,true);$('full-caption').textContent=post.caption;$('photo-dialog').showModal();}
+  if(['edit-post','delete-post','edit-comment','delete-comment'].includes(button.dataset.action)){openManage(post,button.dataset.action,button.dataset.commentId);return;}
+  if(button.dataset.action==='photo'){$('full-photo-view').innerHTML=photoMarkup(post,true);$('full-caption').textContent=post.caption;$('photo-dialog').showModal();}
   if(button.dataset.action==='comments'){
     const state=commentState(post.id);state.open=!state.open;updateComments(post);
     if(state.open)await loadComments(post);
@@ -81,6 +96,34 @@ async function postAction(e){const button=e.target.closest('[data-action]');if(!
   if(button.dataset.action==='map'){location.hash='map';showView();map?.setView([post.lat,post.lng],15);showMapDetail(post);}
 }
 $('feed').addEventListener('click',postAction);$('map-detail').addEventListener('click',postAction);
+let manageTarget=null,manageBusy=false;
+function openManage(post,action,commentId){
+  const isComment=action.endsWith('comment'),deleting=action.startsWith('delete');
+  const comment=isComment?commentState(post.id).comments.find(c=>String(c.id)===String(commentId)):null;
+  if(isComment?!comment?.can_edit:!post.can_edit)return;
+  manageTarget={post,comment,deleting};
+  $('manage-title').textContent=`${deleting?'Delete':'Edit'} ${isComment?'comment':'post'}`;
+  $('manage-description').textContent=deleting?(isComment?'Delete this comment? This cannot be undone.':'Delete this post and its photo, comments, and likes? This cannot be undone.'):'';
+  $('manage-label').textContent=isComment?'Comment':'Caption';$('manage-label').hidden=deleting;
+  $('manage-text').hidden=deleting;$('manage-text').value=isComment?comment.body:post.caption;$('manage-text').required=isComment&&!deleting;
+  $('manage-error').textContent='';$('manage-save').textContent=deleting?'Delete':'Save changes';$('manage-save').classList.toggle('danger',deleting);
+  $('manage-dialog').showModal();
+}
+$('manage-dialog').addEventListener('cancel',event=>{if(manageBusy)event.preventDefault();});
+$('manage-form').onsubmit=async event=>{
+  event.preventDefault();if(!manageTarget||manageBusy)return;
+  const {post,comment,deleting}=manageTarget;
+  if(!deleting&&comment&&!$('manage-text').value.trim()){$('manage-error').textContent='Write a comment first.';return;}
+  manageBusy=true;const buttons=$('manage-form').querySelectorAll('button');buttons.forEach(button=>button.disabled=true);$('manage-error').textContent='';
+  try{
+    const endpoint=`/api/posts/${post.id}${comment?'/comments/'+comment.id:''}`;
+    await api(endpoint,{method:deleting?'DELETE':'PATCH',...(!deleting?{body:JSON.stringify(comment?{body:$('manage-text').value}:{caption:$('manage-text').value})}:{})});
+    if(comment){if(deleting)post.comment_count=Math.max(0,(post.comment_count||0)-1);await loadComments(post);}
+    else{if(deleting){commentStates.delete(post.id);$('map-detail').innerHTML='';$('photo-dialog').close();}await loadPosts();if(!deleting&&$('map-detail').querySelector(`[data-post="${post.id}"]`))showMapDetail(posts.find(p=>p.id===post.id));}
+    $('manage-dialog').close();toast(deleting?'Deleted.':'Changes saved.');
+  }catch(error){$('manage-error').textContent=error.message;}
+  finally{manageBusy=false;buttons.forEach(button=>button.disabled=false);}
+};
 function commentState(id){
   if(!commentStates.has(id))commentStates.set(id,{open:false,comments:[],draft:'',loading:false,sending:false,error:'',hasMore:false,nextCursor:null});
   return commentStates.get(id);
@@ -90,7 +133,7 @@ function commentsMarkup(post){
   const state=commentState(post.id);if(!state.open)return '';
   return `<section class="comments" aria-label="Comments on moment by ${escapeHTML(post.author)}">
     ${state.hasMore?`<button type="button" class="text-button older-comments" data-action="older-comments" ${state.loading?'disabled':''}>Show earlier comments</button>`:''}
-    <ul class="comment-list">${state.comments.map(comment=>`<li><span class="avatar">${escapeHTML(initials(comment.author))}</span><div><div class="comment-meta"><strong>${escapeHTML(comment.author)}</strong><time datetime="${escapeHTML(comment.created_at)}">${escapeHTML(relativeDate(comment.created_at))}</time></div><p>${escapeHTML(comment.body)}</p></div></li>`).join('')}</ul>
+    <ul class="comment-list">${state.comments.map(comment=>`<li><span class="avatar">${escapeHTML(initials(comment.author))}</span><div><div class="comment-meta"><strong>${escapeHTML(comment.author)}</strong><time datetime="${escapeHTML(comment.created_at)}">${escapeHTML(relativeDate(comment.created_at))}</time></div><p>${escapeHTML(comment.body)}</p>${comment.can_edit?`<div class="comment-owner-actions"><button type="button" class="text-button" data-action="edit-comment" data-comment-id="${comment.id}" aria-label="Edit comment">Edit</button><button type="button" class="text-button" data-action="delete-comment" data-comment-id="${comment.id}" aria-label="Delete comment">Delete</button></div>`:''}</div></li>`).join('')}</ul>
     ${state.loading?'<p class="file-help" role="status">Loading comments…</p>':!state.comments.length&&!state.error?'<p class="file-help">Start the conversation.</p>':''}
     ${state.error?`<p class="error" role="alert">${escapeHTML(state.error)}</p>${!state.sending?'<button type="button" class="text-button" data-action="retry-comments">Refresh comments</button>':''}`:''}
     <form class="comment-form"><label>Leave a comment<textarea name="comment" rows="2" maxlength="1000" placeholder="Say something nice…" required ${state.sending?'disabled':''}>${escapeHTML(state.draft)}</textarea></label><div class="comment-form-footer"><span class="file-help">${displayName?'As '+escapeHTML(displayName):'Add your name before commenting'}</span><button type="submit" class="primary" ${state.sending?'disabled':''}>${state.sending?'Posting…':'Post comment'}</button></div></form>

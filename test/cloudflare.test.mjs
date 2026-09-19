@@ -43,7 +43,7 @@ test('Cloudflare runtime persists multipart uploads and reactions in D1/R2 acros
  const dir=await mkdtemp(path.join(tmpdir(),'garrigram-cf-'));
  let mf;
  try{
-  const bundled=await build({entryPoints:['cloudflare/local.mjs'],bundle:true,format:'esm',platform:'browser',write:false});
+  const bundled=await build({stdin:{contents:`import {createApp} from './cloudflare/worker.mjs';export default createApp(async request=>({email:request.headers.get('x-test-email')||'local-preview@garrison.se'}));`,resolveDir:process.cwd()},bundle:true,format:'esm',platform:'browser',write:false});
   const start=()=>new Miniflare({...convertV4MiniflareOptions({name:'garrigram-test',modules:true,script:bundled.outputFiles[0].text,compatibilityDate:'2026-09-19',compatibilityFlags:['nodejs_compat'],d1Databases:{DB:'test-db'},d1Persist:path.join(dir,'d1'),r2Buckets:{PHOTOS:'test-photos'},r2Persist:path.join(dir,'r2')}),resourcePersistencePath:path.join(dir,'resources')});
   mf=start();let db=await mf.getD1Database('DB');
   // D1 exec parses by line. Flatten each migration statement, preserving trigger blocks.
@@ -64,6 +64,17 @@ test('Cloudflare runtime persists multipart uploads and reactions in D1/R2 acros
   const payload=()=>{const form=new FormData();form.set('effect',JSON.stringify(effect));form.set('author','Cloudflare test');form.set('caption','Saved to D1 and R2');form.set('photo',new Blob([image],{type:'image/jpeg'}),'fika.jpg');form.set('lat','59.32');form.set('lng','18.07');form.set('location','Stockholm');return form;};
   const response=await req('/api/posts',{method:'POST',body:payload()});assert.equal(response.status,201,await response.clone().text());
   const {id}=await response.json();let posts=await(await req('/api/posts')).json();assert.equal(posts.length,1);assert.equal(posts[0].location,'Stockholm');assert.equal(posts[0].owner_email,undefined);
+  assert.equal(posts[0].can_edit,1);
+  const mutate=(route,method,body,email='local-preview@garrison.se')=>req(route,{method,headers:{'content-type':'application/json','x-test-email':email},...(body===undefined?{}:{body:JSON.stringify(body)})});
+  assert.equal((await mutate(`/api/posts/${id}`,'PATCH',{caption:'forged',owner_email:'other@garrison.se'},'other@garrison.se')).status,403);
+  assert.equal((await mutate(`/api/posts/${id}`,'DELETE',undefined,'other@garrison.se')).status,403);
+  assert.equal((await(await req('/api/posts',{headers:{'x-test-email':'other@garrison.se'}})).json())[0].can_edit,0);
+  assert.equal((await mutate(`/api/posts/${id}`,'PATCH',{caption:'Edited caption'})).status,200);
+  assert.equal((await mutate(`/api/posts/${id}`,'PATCH',{caption:'x'.repeat(1001)})).status,400);
+  await db.prepare('UPDATE posts SET effect=NULL WHERE id=?').bind(id).run();
+  assert.equal((await mutate(`/api/posts/${id}/effect`,'PUT',{effect})).status,200);
+  assert.equal((await mutate(`/api/posts/${id}/effect`,'PUT',{effect:{bad:true}})).status,400);
+  assert.equal((await mutate('/api/posts/missing/effect','PUT',{effect})).status,404);
   const photo=await req(posts[0].image);assert.equal(photo.status,200);assert.equal(photo.headers.get('content-type'),'image/jpeg');assert.equal((await photo.arrayBuffer()).byteLength,image.byteLength);assert.equal(photo.headers.get('cache-control'),'private, no-store');
   for(let i=0;i<2;i++)assert.equal((await req(`/api/posts/${id}/like`,{method:'PUT',headers:{'content-type':'application/json','x-visitor-id':'fake-'+i},body:JSON.stringify({liked:true,author:'Test Teammate'})})).status,200);
   assert.equal((await(await req('/api/posts')).json())[0].likes,1);
@@ -96,5 +107,18 @@ test('Cloudflare runtime persists multipart uploads and reactions in D1/R2 acros
   assert.equal((await req('/api/posts',{method:'POST',body:payload()})).status,429);
   await assert.rejects(()=>insert().run(),/daily_upload_limit_exceeded/);
   assert.equal((await(await mf.getR2Bucket('PHOTOS')).list()).objects.length,1);
+  const comments=await(await req(`/api/posts/${id}/comments`)).json(),commentId=comments.comments[0].id;
+  assert.equal(comments.comments[0].can_edit,1);
+  const otherComments=await(await req(`/api/posts/${id}/comments`,{headers:{'x-test-email':'other@garrison.se'}})).json();assert.equal(otherComments.comments[0].can_edit,0);
+  for(const method of ['PATCH','DELETE'])assert.equal((await mutate(`/api/posts/${id}/comments/${commentId}`,method,{body:'forged'},'other@garrison.se')).status,403);
+  assert.equal((await mutate(`/api/posts/${id}/comments/${commentId}`,'PATCH',{body:'Edited comment'})).status,200);
+  assert.equal((await mutate(`/api/posts/${id}/comments/${commentId}`,'PATCH',{body:' '})).status,400);
+  assert.equal((await mutate(`/api/posts/${id}/comments/${commentId}`,'DELETE')).status,200);
+  assert.equal((await mutate(`/api/posts/${id}/comments/${commentId}`,'DELETE')).status,404);
+  assert.equal((await mutate(`/api/posts/${id}`,'DELETE')).status,200);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM comments WHERE post_id=?').bind(id).first()).n,0);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM likes WHERE post_id=?').bind(id).first()).n,0);
+  assert.equal((await(await mf.getR2Bucket('PHOTOS')).list()).objects.length,0);
+  assert.equal((await db.prepare('SELECT bytes FROM storage_usage WHERE id=1').first()).bytes,29);
  }finally{if(mf)await mf.dispose();await rm(dir,{recursive:true,force:true});}
 });
