@@ -15,7 +15,7 @@
   "d1_databases": [{
     "binding": "DB",
     "database_name": "garrigram",
-    "database_id": "00000000-0000-0000-0000-000000000000",
+    "database_id": "2a5b8292-dda7-4b9f-86b7-34af3aad6000",
     "migrations_dir": "cloudflare/migrations"
   }],
   "r2_buckets": [{"binding": "PHOTOS", "bucket_name": "garrigram-photos"}],

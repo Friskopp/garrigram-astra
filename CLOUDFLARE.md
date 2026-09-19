@@ -2,6 +2,17 @@
 
 Garrigram uses Workers for the app/API, D1 for posts and likes, R2 Standard for photos, and Cloudflare Access for verified `@garrison.se` sign-in. No custom domain is required; use the Worker's HTTPS `workers.dev` URL initially.
 
+## Current deployment — September 19, 2026
+
+The Worker is deployed at **https://garrigram.garrigram.workers.dev**. It remains locked while Zero Trust onboarding and the Access application are pending. HTTPS checks confirmed HTTP 503 for the homepage, JavaScript, posts API and upload paths; no app content is served before sign-in is configured.
+
+- D1 `garrigram`: `2a5b8292-dda7-4b9f-86b7-34af3aad6000`, Western Europe, migration `0001_initial.sql` applied.
+- R2 `garrigram-photos`: Standard storage; public `r2.dev` access confirmed disabled.
+- Initial Worker version: `ac467c45-78d3-42d0-808b-5c14e47dba31`.
+- Wrangler is authorized. No additional API key is needed for Worker, D1 or R2 deployment.
+
+Do not recreate these resources. Continue with Zero Trust setup and the sign-in policy below, then populate the two Access identifiers and run `bun run cf:deploy`. Cloudflare's [Zero Trust onboarding](https://developers.cloudflare.com/cloudflare-one/setup/) requires a team name and payment details even on the Free plan. Enable One-time PIN explicitly for email-code sign-in.
+
 ## Account setup
 
 Account: `18fdbf2f6f454765e0b2b46590f0a608` (owned by Anton's personal Cloudflare account).
