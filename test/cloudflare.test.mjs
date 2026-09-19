@@ -1,0 +1,80 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
+import { build } from 'esbuild';
+import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
+import { authenticate } from '../cloudflare/auth.mjs';
+import worker from '../cloudflare/worker.mjs';
+
+const authEnv = {ACCESS_TEAM_DOMAIN:'https://garrigram-test.cloudflareaccess.com',ACCESS_AUD:'test-app',ALLOWED_EMAIL_DOMAIN:'garrison.se'};
+
+test('Access authentication rejects unsigned, expired, wrong-audience and outside-domain identities',async()=>{
+ const {publicKey,privateKey}=await generateKeyPair('RS256');
+ const jwk=await exportJWK(publicKey);jwk.kid='test-key';
+ const keys=createLocalJWKSet({keys:[jwk]});
+ const sign=async({email='member@garrison.se',aud='test-app',issuer=authEnv.ACCESS_TEAM_DOMAIN,expires='1h'}={})=>new SignJWT({email}).setProtectedHeader({alg:'RS256',kid:'test-key'}).setSubject('member-123').setIssuedAt().setIssuer(issuer).setAudience(aud).setExpirationTime(expires).sign(privateKey);
+ const request=token=>new Request('https://app.example/api/posts',{headers:token?{'cf-access-jwt-assertion':token}:{}});
+ assert.deepEqual(await authenticate(request(await sign()),authEnv,keys),{email:'member@garrison.se'});
+ const attacker=await generateKeyPair('RS256');
+ const forged=await new SignJWT({email:'member@garrison.se'}).setProtectedHeader({alg:'RS256',kid:'test-key'}).setSubject('attacker').setIssuedAt().setIssuer(authEnv.ACCESS_TEAM_DOMAIN).setAudience('test-app').setExpirationTime('1h').sign(attacker.privateKey);
+ await assert.rejects(()=>authenticate(request(forged),authEnv,keys),e=>e.status===401);
+ for(const token of [null,'forged',await sign({aud:'another-app'}),await sign({issuer:'https://other.cloudflareaccess.com'}),await sign({expires:'-1h'})]) {
+  await assert.rejects(()=>authenticate(request(token),authEnv,keys),e=>e.status===401);
+ }
+ await assert.rejects(()=>authenticate(request(null),{},keys),e=>e.status===503);
+ for(const email of ['member@gmail.com','member@garrison.se.evil.example']){
+  const token=await sign({email});await assert.rejects(()=>authenticate(request(token),authEnv,keys),e=>e.status===403);
+ }
+});
+
+test('Production rejects unauthenticated requests to pages, APIs, and photo files before storage access',async()=>{
+ for(const pathname of ['/','/app.js','/api/posts','/uploads/example.jpg']){
+  const response=await worker.fetch(new Request('https://app.example'+pathname),authEnv);
+  assert.equal(response.status,401);assert.equal(response.headers.get('cache-control'),'private, no-store');
+ }
+ const spoofed=await worker.fetch(new Request('https://app.example/api/posts',{headers:{'cf-access-authenticated-user-email':'member@garrison.se','X-Visitor-Id':'pretend-member'}}),authEnv);
+ assert.equal(spoofed.status,401);
+});
+
+test('Cloudflare runtime persists multipart uploads and reactions in D1/R2 across restart',async()=>{
+ const dir=await mkdtemp(path.join(tmpdir(),'garrigram-cf-'));
+ let mf;
+ try{
+  const bundled=await build({entryPoints:['cloudflare/local.mjs'],bundle:true,format:'esm',platform:'browser',write:false});
+  const start=()=>new Miniflare({...convertV4MiniflareOptions({name:'garrigram-test',modules:true,script:bundled.outputFiles[0].text,compatibilityDate:'2026-09-19',compatibilityFlags:['nodejs_compat'],d1Databases:{DB:'test-db'},d1Persist:path.join(dir,'d1'),r2Buckets:{PHOTOS:'test-photos'},r2Persist:path.join(dir,'r2')}),resourcePersistencePath:path.join(dir,'resources')});
+  mf=start();let db=await mf.getD1Database('DB');
+  // D1 exec parses by line. Flatten each migration statement, preserving trigger blocks.
+  const sql=await readFile('cloudflare/migrations/0001_initial.sql','utf8');
+  const statements=sql.match(/CREATE TRIGGER[\s\S]*?END;|(?:CREATE|INSERT)[\s\S]*?;/g);
+  for(const statement of statements)await db.prepare(statement).run();
+  const req=async(route,options={})=>{
+   const headers={origin:'https://local.example',...options.headers};
+   // Serialize native Node FormData before crossing Miniflare's undici boundary.
+   if(options.body instanceof FormData){const encoded=new Response(options.body);headers['content-type']=encoded.headers.get('content-type');options={...options,body:await encoded.arrayBuffer()};}
+   return mf.dispatchFetch('https://local.example'+route,{...options,headers});
+  };
+  assert.deepEqual(await(await req('/api/posts')).json(),[]);
+  const image=await readFile('public/images/fika.jpg');
+  const payload=()=>{const form=new FormData();form.set('author','Cloudflare test');form.set('caption','Saved to D1 and R2');form.set('photo',new Blob([image],{type:'image/jpeg'}),'fika.jpg');form.set('lat','59.32');form.set('lng','18.07');form.set('location','Stockholm');return form;};
+  const response=await req('/api/posts',{method:'POST',body:payload()});assert.equal(response.status,201,await response.clone().text());
+  const {id}=await response.json();let posts=await(await req('/api/posts')).json();assert.equal(posts.length,1);assert.equal(posts[0].location,'Stockholm');assert.equal(posts[0].owner_email,undefined);
+  const photo=await req(posts[0].image);assert.equal(photo.status,200);assert.equal(photo.headers.get('content-type'),'image/jpeg');assert.equal((await photo.arrayBuffer()).byteLength,image.byteLength);assert.equal(photo.headers.get('cache-control'),'private, no-store');
+  for(let i=0;i<2;i++)assert.equal((await req(`/api/posts/${id}/like`,{method:'PUT',headers:{'content-type':'application/json','x-visitor-id':'fake-'+i},body:JSON.stringify({liked:true})})).status,200);
+  assert.equal((await(await req('/api/posts')).json())[0].likes,1);
+  assert.equal((await req('/api/posts',{method:'POST',body:payload(),headers:{origin:'https://evil.example'}})).status,403);
+  const invalid=payload();invalid.set('photo',new Blob(['not a photo'],{type:'image/jpeg'}),'fake.jpg');assert.equal((await req('/api/posts',{method:'POST',body:invalid})).status,400);
+  assert.equal((await db.prepare('SELECT bytes FROM storage_usage WHERE id=1').first()).bytes,image.byteLength);
+  await mf.dispose();mf=start();db=await mf.getD1Database('DB');posts=await(await req('/api/posts')).json();assert.equal(posts.length,1);assert.equal(posts[0].likes,1);assert.equal((await req(posts[0].image)).status,200);
+  await db.prepare('UPDATE storage_usage SET bytes=7999999999 WHERE id=1').run();assert.equal((await req('/api/posts',{method:'POST',body:payload()})).status,507);
+  assert.equal((await(await mf.getR2Bucket('PHOTOS')).list()).objects.length,1);
+  await db.prepare('UPDATE storage_usage SET bytes=? WHERE id=1').bind(image.byteLength).run();
+  const insert=()=>db.prepare('INSERT INTO posts (id,author,owner_email,caption,image,image_bytes,created_at) VALUES (?,?,?,?,?,?,?)').bind(crypto.randomUUID(),'Quota fixture','local-preview@garrison.se','','/quota-fixture.jpg',1,new Date().toISOString());
+  for(let i=0;i<29;i++)await insert().run();
+  assert.equal((await req('/api/posts',{method:'POST',body:payload()})).status,429);
+  await assert.rejects(()=>insert().run(),/daily_upload_limit_exceeded/);
+  assert.equal((await(await mf.getR2Bucket('PHOTOS')).list()).objects.length,1);
+ }finally{if(mf)await mf.dispose();await rm(dir,{recursive:true,force:true});}
+});

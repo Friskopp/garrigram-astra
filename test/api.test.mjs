@@ -31,5 +31,7 @@ test('photo upload, feed, reaction isolation, validation, and restart persistenc
   rows=await(await request('/api/posts')).json();assert.equal(rows.length,1);assert.equal(rows[0].caption,payload.caption);assert.equal(rows[0].likes,1);assert.equal((await fetch(base+rows[0].image)).status,200);
   await request(`/api/posts/${id}/like`,'PUT',{liked:false});assert.equal((await(await request('/api/posts')).json())[0].likes,0);
   assert.equal((await request('/api/posts/missing-id/like','PUT',{liked:true})).status,404);
+  const form=new FormData();form.set('author','Multipart tester');form.set('caption','Browser upload format');form.set('photo',new Blob([await readFile('public/images/fika.jpg')],{type:'image/jpeg'}),'fika.jpg');
+  assert.equal((await fetch(base+'/api/posts',{method:'POST',headers:{'x-visitor-id':'test-visitor-one'},body:form})).status,201);
  }finally{if(child?.exitCode===null)await stop();await rm(data,{recursive:true,force:true});}
 });

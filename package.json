@@ -3,6 +3,28 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
-  "scripts": { "start": "node server.mjs", "dev": "node --watch server.mjs", "test": "node --test test/*.test.mjs", "check": "node --check server.mjs && node --check public/app.js" }
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check server.mjs && node --check public/app.js && node --check cloudflare/worker.mjs && node --check cloudflare/auth.mjs",
+    "cf:login": "wrangler login",
+    "cf:dev": "wrangler dev --config wrangler.local.jsonc",
+    "cf:migrate:local": "wrangler d1 migrations apply garrigram-local --local --config wrangler.local.jsonc",
+    "cf:migrate": "wrangler d1 migrations apply garrigram --remote --config wrangler.jsonc",
+    "cf:build": "wrangler deploy --dry-run --outdir dist --config wrangler.jsonc",
+    "cf:deploy": "node scripts/check-deployment.mjs && wrangler deploy --config wrangler.jsonc",
+    "test:cloudflare": "node --test test/cloudflare.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1",
+    "miniflare": "5.20260918.0-alpha",
+    "wrangler": "4.135.0"
+  },
+  "dependencies": {
+    "jose": "6.2.12"
+  }
 }

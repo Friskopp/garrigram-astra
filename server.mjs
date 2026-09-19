@@ -22,6 +22,17 @@ if(process.env.SEED_DEMO !== '0') {
 const json = (res, status, value) => { res.writeHead(status, {'Content-Type':'application/json','Cache-Control':'no-store'}); res.end(JSON.stringify(value)); };
 const mime = {'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp':'image/webp','.woff2':'font/woff2'};
 const readBody = async req => { let length=0; const chunks=[]; for await (const chunk of req) { length+=chunk.length; if(length>22*1024*1024) throw Object.assign(new Error('Photo is too large. Please choose one under 15 MB.'), {status:413}); chunks.push(chunk); } try { return JSON.parse(Buffer.concat(chunks).toString()); } catch { throw Object.assign(new Error('Invalid request.'), {status:400}); } };
+async function readPost(req) {
+  if (!req.headers['content-type']?.startsWith('multipart/form-data')) return readBody(req);
+  let size=0; const chunks=[];
+  for await (const chunk of req) { size+=chunk.length; if(size>16*1024*1024) throw Object.assign(new Error('Photo is too large.'),{status:413}); chunks.push(chunk); }
+  let form;
+  try { form=await new Response(Buffer.concat(chunks),{headers:{'Content-Type':req.headers['content-type']}}).formData(); }
+  catch { throw Object.assign(new Error('Invalid photo upload.'),{status:400}); }
+  const photo=form.get('photo');
+  if(!(photo instanceof File)) throw Object.assign(new Error('Please choose a photo.'),{status:400});
+  return {author:form.get('author'),caption:form.get('caption')||'',image:`data:${photo.type};base64,${Buffer.from(await photo.arrayBuffer()).toString('base64')}`,location:form.get('location'),lat:form.get('lat')?Number(form.get('lat')):null,lng:form.get('lng')?Number(form.get('lng')):null};
+}
 const fail = message => { throw Object.assign(new Error(message), {status:400}); };
 const visitor = req => { const value=req.headers['x-visitor-id']; if(typeof value!=='string'||!/^[a-zA-Z0-9-]{8,80}$/.test(value)) fail('Missing visitor identifier.'); return value; };
 function imageType(bytes) { if(bytes[0]===255&&bytes[1]===216&&bytes[2]===255) return 'jpg'; if(bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) return 'png'; if(bytes.toString('ascii',0,4)==='RIFF'&&bytes.toString('ascii',8,12)==='WEBP') return 'webp'; return null; }
@@ -35,12 +46,13 @@ export const server = http.createServer(async (req,res) => {
       const origin=req.headers.origin;
       if(origin && new URL(origin).host!==req.headers.host) return json(res,403,{error:'Cross-origin requests are not allowed.'});
     }
+    if(url.pathname==='/api/session' && req.method==='GET') return json(res,200,{hosted:false});
     if(url.pathname==='/api/posts' && req.method==='GET') {
       const who=visitor(req);
       return json(res,200,db.prepare(`SELECT p.*, (SELECT COUNT(*) FROM likes WHERE post_id=p.id) AS likes, EXISTS(SELECT 1 FROM likes WHERE post_id=p.id AND visitor=?) AS liked FROM posts p ORDER BY demo ASC, created_at DESC`).all(who));
     }
     if(url.pathname==='/api/posts' && req.method==='POST') {
-      visitor(req); const body=await readBody(req);
+      visitor(req); const body=await readPost(req);
       if(typeof body.author!=='string'||!body.author.trim()||body.author.length>60) fail('Please enter a name (up to 60 characters).');
       if(typeof body.caption!=='string'||body.caption.length>1000) fail('Captions can be up to 1,000 characters.');
       if(typeof body.image!=='string'||!/^data:image\/(jpeg|png|webp);base64,/.test(body.image)) fail('Please choose a JPG, PNG or WebP photo.');

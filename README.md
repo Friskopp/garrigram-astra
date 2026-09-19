@@ -28,7 +28,7 @@ Open http://127.0.0.1:4317. The server listens on loopback only by default. `POR
 
 `data/garrigram.sqlite` stores posts and likes. `data/uploads/` stores uploaded images. Both survive server restarts and are ignored by Git. Back up the entire `data/` directory with the server stopped. Browser storage contains only a display-name preference and random visitor ID, not posts or image data.
 
-This is a local prototype with display names, not verified employee accounts. There is no login or access control, and it should not be deployed publicly as-is. Before company rollout, add employee sign-in, ownership/deletion controls, upload quotas, and backups. Camera/geolocation generally require HTTPS when accessed from another device; localhost is a browser exception.
+The Node server is a loopback-only local prototype with display names, not verified employee accounts. The separate Cloudflare deployment requires verified `@garrison.se` sign-in and privately serves all app assets, posts and photos. Camera/geolocation require HTTPS when accessed from another device; localhost is a browser exception.
 
 Three clearly labeled example moments are inserted on startup with fixed IDs (no duplicates). Set `SEED_DEMO=0` on a fresh data directory for an empty feed. This flag does not remove existing examples.
 
@@ -43,9 +43,11 @@ npm run check
 
 The integration test uses an isolated temporary database and server, verifies uploads and image retrieval, rejected inputs, cross-origin rejection, idempotent likes, separate visitor state, and persistence across a real server restart. It leaves the app's data untouched.
 
-## Hosting later
+## Cloudflare hosting
 
-The JSON API is separate from the browser interface. The local storage layer uses SQLite and files. Cloudflare Workers + D1 + R2 is a viable migration path, but requires replacing the Node server/storage adapter and adding company authentication. A Node host with a persistent volume can run the current server with fewer changes. No hosting provider has been configured and nothing has been deployed.
+Cloudflare Workers, D1, R2 and Access are configured in `wrangler.jsonc`. Install deployment/test tools with `bun install --frozen-lockfile`. See [CLOUDFLARE.md](CLOUDFLARE.md) for account setup, first deployment, private email sign-in, local Cloudflare emulation, costs and recovery.
+
+The hosted app uses verified email for reaction identity, keeps photo storage private, and enforces an 8 GB photo budget plus 30 uploads per member per day. Local data is separate and is never uploaded automatically. Deployment still requires the account's real D1 ID and Access settings; the app fails closed until authentication is configured.
 
 ## Credits
 
