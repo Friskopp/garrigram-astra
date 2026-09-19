@@ -1,4 +1,6 @@
 import { effectSvg } from './effects.mjs';
+import { mapPosts, createHeatLayer } from './heatmap.mjs';
+let heatLayer, mapMode = 'photos';
 const icons={grid:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',map:'<path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3zM9 3v15M15 6v15"/>',plus:'<path d="M12 5v14M5 12h14"/>',camera:'<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="4"/>',heart:'<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/>',pin:'<path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/>',close:'<path d="m6 6 12 12M6 18 18 6"/>',arrow:'<path d="M4 12h16m-6-6 6 6-6 6"/>',locate:'<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3"/>',expand:'<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/>',spark:'<path d="m12 2 2.5 7.5L22 12l-7.5 2.5L12 22l-2.5-7.5L2 12l7.5-2.5Z"/>'};
 icons.comment='<path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H6l-4 2 1.5-5A8.5 8.5 0 1 1 21 11.5Z"/>';
 const icon=name=>`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name]||''}</svg>`;
@@ -93,7 +95,7 @@ async function postAction(e){const button=e.target.closest('[data-action]');if(!
       });
     }catch(error){toast(error.message);}finally{button.disabled=false;}
   }
-  if(button.dataset.action==='map'){location.hash='map';showView();map?.setView([post.lat,post.lng],15);showMapDetail(post);}
+  if(button.dataset.action==='map'){$('map-period').value='all';setMapMode('photos');location.hash='map';showView();map?.setView([post.lat,post.lng],15);showMapDetail(post);}
 }
 $('feed').addEventListener('click',postAction);$('map-detail').addEventListener('click',postAction);
 let manageTarget=null,manageBusy=false;
@@ -171,8 +173,32 @@ function centerOnUserLocation(instance,{onSettled=()=>{},notify=false}={}){
   },()=>{cleanup();if(notify)toast('Location wasn’t available. You can still explore the map.');},{timeout:10000,maximumAge:60000});
 }
 function initMap(){if(map)return;if(!window.L){$('map-note').textContent='The map couldn’t load. Refresh the page to try again.';return;}const nearby=posts.find(post=>post.lat!==null&&post.lng!==null)||places.office;map=makeMap('map',[nearby.lat,nearby.lng],15);renderMarkers();centerOnUserLocation(map);}
-function renderMarkers(){markers.forEach(m=>m.remove());markers=[];const located=posts.filter(p=>p.lat!==null&&p.lng!==null);for(const post of located){const pin=L.divIcon({className:'photo-pin',html:`<img src="${escapeHTML(post.image)}" alt="${escapeHTML(post.author)}">`,iconSize:[49,54],iconAnchor:[24,54]});const marker=L.marker([post.lat,post.lng],{icon:pin,title:`${post.author} — ${post.location}`,alt:`Open moment by ${post.author}`,keyboard:true}).addTo(map);marker.bindPopup(`<img class="popup-photo" src="${escapeHTML(post.image)}" alt=""><div class="popup-author">${escapeHTML(post.author)}</div><div class="popup-place">${escapeHTML(post.location)}</div>`);marker.on('click',()=>showMapDetail(post));markers.push(marker);}$('map-note').textContent=located.length?`${located.length} located moment${located.length===1?'':'s'} · Select a photo pin to see the moment.`:'No pinned moments yet. Add an optional location when you share a photo.';}
-function fitMap(){if(!map)return;if(markers.length)map.fitBounds(L.featureGroup(markers).getBounds().pad(.25),{maxZoom:15});else map.setView([places.office.lat,places.office.lng],15);}
+function renderMarkers(){markers.forEach(m=>m.remove());markers=[];const located=mapPosts(posts,$('map-period').value);
+  if(mapMode==='heat'){
+    heatLayer ||= createHeatLayer(L);
+    heatLayer.setPosts(located.filter(post=>!post.demo));
+    if(!map.hasLayer(heatLayer))heatLayer.addTo(map);
+  }else if(heatLayer&&map.hasLayer(heatLayer))map.removeLayer(heatLayer);
+  for(const post of mapMode==='photos'?located:[]){const pin=L.divIcon({className:'photo-pin',html:`<img src="${escapeHTML(post.image)}" alt="${escapeHTML(post.author)}">`,iconSize:[49,54],iconAnchor:[24,54]});const marker=L.marker([post.lat,post.lng],{icon:pin,title:`${post.author} — ${post.location}`,alt:`Open moment by ${post.author}`,keyboard:true}).addTo(map);marker.bindPopup(`<img class="popup-photo" src="${escapeHTML(post.image)}" alt=""><div class="popup-author">${escapeHTML(post.author)}</div><div class="popup-place">${escapeHTML(post.location)}</div>`);marker.on('click',()=>showMapDetail(post));markers.push(marker);}const shown=mapMode==='heat'?located.filter(post=>!post.demo):located;
+  const withoutLocation=posts.filter(post=>!Number.isFinite(post.lat)||!Number.isFinite(post.lng)).length;
+  $('map-note').textContent=shown.length
+    ? `${shown.length} located photo${shown.length===1?'':'s'} · ${mapMode==='heat'?'Warmer areas mean more photos together. Zoom in to separate places. Examples excluded.':'Select a photo pin to see the moment.'}`
+    : `No photos with a location in this period. Try a longer time range or share a located photo.${mapMode==='heat'?' Examples are excluded.':''}`;
+  if(withoutLocation)$('map-note').textContent+=` ${withoutLocation} unlocated photo${withoutLocation===1?' is':'s are'} not shown.`;
+  $('fit-map').disabled=!shown.length;
+}
+function fitMap(){if(!map)return;const located=mapPosts(posts,$('map-period').value).filter(post=>mapMode!=='heat'||!post.demo);if(located.length)map.fitBounds(L.latLngBounds(located.map(post=>[post.lat,post.lng])).pad(.25),{maxZoom:15});}
+function setMapMode(mode){
+  mapMode=mode;
+  $('map-photos').setAttribute('aria-pressed',String(mode==='photos'));
+  $('map-heat').setAttribute('aria-pressed',String(mode==='heat'));
+  $('heat-legend').hidden=mode!=='heat';
+  $('map-detail').innerHTML='';
+  if(map)renderMarkers();
+}
+$('map-photos').onclick=()=>setMapMode('photos');
+$('map-heat').onclick=()=>setMapMode('heat');
+$('map-period').onchange=()=>{$('map-detail').innerHTML='';if(map)renderMarkers();};
 function showMapDetail(post){$('map-detail').innerHTML=card(post);}
 $('fit-map').onclick=fitMap;
 $('locate-map').onclick=()=>{if(!map)return;const button=$('locate-map');button.disabled=true;button.innerHTML=icon('locate')+' Locating…';centerOnUserLocation(map,{notify:true,onSettled:()=>{button.disabled=false;button.innerHTML=icon('locate')+' Near me';}});};
