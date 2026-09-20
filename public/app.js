@@ -202,7 +202,7 @@ function renderMarkers(){const located=mapPosts(posts,$('map-period').value);
   const shown=mapMode==='heat'?located.filter(post=>!post.demo):located;
   const withoutLocation=posts.filter(post=>!Number.isFinite(post.lat)||!Number.isFinite(post.lng)).length;
   $('map-note').textContent=shown.length
-    ? `${shown.length} located photo${shown.length===1?'':'s'} · ${mapMode==='heat'?'Warmer areas mean more photos together. Tap a thumbnail to open a moment. Examples excluded.':'Select a photo pin to see the moment.'}`
+    ? `${shown.length} located photo${shown.length===1?'':'s'} · ${mapMode==='heat'?'Warmer areas mean more photos together. Switch to Photos to open a moment. Examples excluded.':'Select a photo pin to see the moment.'}`
     : `No photos with a location in this period. Try a longer time range or share a located photo.${mapMode==='heat'?' Examples are excluded.':''}`;
   if(withoutLocation)$('map-note').textContent+=` ${withoutLocation} unlocated photo${withoutLocation===1?' is':'s are'} not shown.`;
   $('fit-map').disabled=!shown.length;
@@ -215,18 +215,20 @@ function renderMarkers(){const located=mapPosts(posts,$('map-period').value);
 function photoUrl(post,size){return size==='original'||!post.image.startsWith('/uploads/')?post.image:`${post.image}?size=${size}`;}
 function renderMarkerPins(){
   if(!map)return;
+  if(mapMode==='heat'){
+    for(const {marker} of markers.values())marker.remove();
+    markers.clear();
+    return;
+  }
   const bounds=map.getBounds().pad(.2);
-  const visible=mapPosts(posts,$('map-period').value).filter(post=>bounds.contains([post.lat,post.lng])&&(mapMode!=='heat'||!post.demo));
-  const selected=mapMode==='heat'
-    ? [...new Map(visible.map(post=>[`${post.lat.toFixed(3)},${post.lng.toFixed(3)}`,post])).values()].slice(0,8)
-    : visible;
+  const selected=mapPosts(posts,$('map-period').value).filter(post=>bounds.contains([post.lat,post.lng]));
   const keep=new Set(selected.map(post=>post.id));
   for(const [id,entry] of markers){if(!keep.has(id)){entry.marker.remove();markers.delete(id);}}
   for(const post of selected){
     const signature=JSON.stringify([mapMode,post.image,post.lat,post.lng,post.author,post.location]);
     if(markers.get(post.id)?.signature===signature)continue;
     markers.get(post.id)?.marker.remove();
-    const pin=L.divIcon({className:mapMode==='heat'?'photo-pin heat-photo-pin':'photo-pin',html:`<img src="${escapeHTML(photoUrl(post,'map'))}" decoding="async" alt="${escapeHTML(post.author)}">`,iconSize:[49,54],iconAnchor:mapMode==='heat'?[24,82]:[24,54]});
+    const pin=L.divIcon({className:'photo-pin',html:`<img src="${escapeHTML(photoUrl(post,'map'))}" decoding="async" alt="${escapeHTML(post.author)}">`,iconSize:[49,54],iconAnchor:[24,54]});
     const marker=L.marker([post.lat,post.lng],{icon:pin,title:`${post.author} — ${post.location}`,alt:`Open moment by ${post.author}`,keyboard:true}).addTo(map);
     marker.on('click',()=>{const current=posts.find(item=>item.id===post.id);if(current)void openPostDetail(current);});
     markers.set(post.id,{marker,signature});
