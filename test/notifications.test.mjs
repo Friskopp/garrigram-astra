@@ -30,7 +30,8 @@ async function fixture(){
   const encrypted=body.subarray(21+keylen),decipher=createDecipheriv('aes-128-gcm',key,nonce);decipher.setAuthTag(encrypted.subarray(-16));
   const plain=Buffer.concat([decipher.update(encrypted.subarray(0,-16)),decipher.final()]);let end=plain.length;while(plain[end-1]===0)end--;assert.equal(plain[end-1],2);return JSON.parse(plain.subarray(0,end-1).toString());
  };
- return {sqlite,env,jobs,now,subscription,req,post,subscribe,batch,decrypt,vapid};
+ const comment=(postId,owner='teammate@garrison.se')=>{const row=sqlite.prepare('INSERT INTO comments(post_id,owner_email,author,body,created_at) VALUES(?,?,?,?,?) RETURNING id').get(postId,owner,'Teammate','private comment',new Date().toISOString());sqlite.prepare('UPDATE push_comment_events SET created_at=? WHERE comment_id=?').run(now-180000,row.id);return row.id;};
+ return {sqlite,env,jobs,now,subscription,req,post,comment,subscribe,batch,decrypt,vapid};
 }
 
 test('subscriptions are opt-in, authenticated, owner-scoped, bounded, and cannot target arbitrary servers',async()=>{
@@ -96,4 +97,44 @@ test('Web Push encryption and dispatch work inside the actual Cloudflare runtime
   const sent=await response.json();assert.deepEqual(f.decrypt({...sent,body:Buffer.from(sent.body)}),{body:'Runtime test'});assert.equal(outboundCalls,1);
   providerRedirect=true;const redirect=await mf.dispatchFetch('https://app.example/',{method:'POST',redirect:'manual',body:JSON.stringify({endpoint:f.subscription.endpoint,...f.subscription.keys})});assert.equal(redirect.status,302);assert.equal(outboundCalls,2,'Redirect destination must never receive the signed push request');
  }finally{await mf?.dispose();f.sqlite.close();}
+});
+
+
+test('comment alerts are opt-in, go only to the post owner, omit self/deleted comments and open the correct post',async()=>{
+ const f=await fixture();try{
+  f.post('mine','reader@garrison.se');f.post('theirs');const id=await f.subscribe();
+  f.comment('mine');await scheduleNotifications(f.env,f.now);assert.equal(f.jobs.length,0,'Existing photo subscribers must not get comment alerts automatically');
+  const change=await f.req('/api/notifications','PATCH',{endpoint:f.subscription.endpoint,preferences:{photos:false,comments:true}});assert.equal(change.status,200);
+  assert.deepEqual((await change.json()).preferences,{photos:false,comments:true});
+  f.comment('mine','reader@garrison.se');f.comment('theirs');const deleted=f.comment('mine');f.sqlite.prepare('DELETE FROM comments WHERE id=?').run(deleted);
+  const kept=f.comment('mine');f.sqlite.prepare('UPDATE comments SET body=? WHERE id=?').run('Edited private comment',kept);
+  await scheduleNotifications(f.env,f.now);assert.deepEqual(f.jobs,[{id,kind:'comments'}]);
+  let payload,calls=0;const transport=async(_,options)=>{calls++;payload=f.decrypt(options);return new Response(null,{status:201});};
+  await consumeNotifications(f.batch(f.jobs[0]),f.env,transport,f.now);
+  assert.equal(payload.body,'Someone commented on your post.');assert.equal(payload.url,'/?post=mine#feed');assert.equal(payload.tag,'garrigram-comments');assert.ok(!JSON.stringify(payload).includes('private comment'));
+  await consumeNotifications(f.batch(f.jobs[0]),f.env,transport,f.now);assert.equal(calls,1,'duplicate queue attempts must not repeat delivered comments');
+ }finally{f.sqlite.close();}
+});
+
+test('topic toggles stay independent, re-enabling skips old activity, and queued alerts honor disabled preferences',async()=>{
+ const f=await fixture();try{
+  f.post('mine','reader@garrison.se');const id=await f.subscribe();
+  const prefs=preferences=>f.req('/api/notifications','PATCH',{endpoint:f.subscription.endpoint,preferences});
+  assert.equal((await prefs({comments:'true'})).status,400);assert.equal((await prefs({anything:true})).status,400);
+  assert.equal((await f.req('/api/notifications','PATCH',{endpoint:f.subscription.endpoint,preferences:{comments:true}},'someoneelse@garrison.se')).status,404);
+  await prefs({comments:true});f.post('new-photo');f.comment('mine');
+  await scheduleNotifications(f.env,f.now);assert.equal(f.jobs.length,2);
+  await prefs({photos:false});let comments=0;
+  await consumeNotifications(f.batch({id,kind:'photos'}),f.env,()=>{throw new Error('Disabled photo alerts must not send');},f.now);
+  await consumeNotifications(f.batch({id,kind:'comments'}),f.env,async(_,options)=>{comments++;assert.equal(f.decrypt(options).tag,'garrigram-comments');return new Response(null,{status:201});},f.now);
+  assert.equal(comments,1);
+  await prefs({comments:false});f.comment('mine');await consumeNotifications(f.batch({id,kind:'comments'}),f.env,()=>{throw new Error('Disabled comment alerts must not send');},f.now+180000);
+  assert.equal((await f.req('/api/notifications/test','POST',f.subscription)).status,429,'Both topics off means no test alerts');
+  await prefs({comments:true});f.jobs.length=0;await scheduleNotifications(f.env,f.now+180000);assert.equal(f.jobs.length,0,'Re-enable must not replay comments from while disabled');
+  f.comment('mine');f.comment('mine');await scheduleNotifications(f.env,f.now+180000);assert.equal(f.jobs[0].kind,'comments');
+  await consumeNotifications(f.batch(f.jobs[0]),f.env,async(_,options)=>{assert.equal(f.decrypt(options).body,'2 new comments on your post.');return new Response(null,{status:201});},f.now+180000);
+  assert.deepEqual((await(await prefs({photos:true})).json()).preferences,{photos:true,comments:true});
+  // Old clients refreshing subscriptions must not silently reset new preferences.
+  await f.req('/api/notifications','PUT',f.subscription);assert.deepEqual((await(await f.req('/api/notifications/status','POST',f.subscription)).json()).preferences,{photos:true,comments:true});
+ }finally{f.sqlite.close();}
 });

@@ -8,7 +8,7 @@ self.addEventListener('push',event=>{
   try{const target=new URL(data.url,self.location.origin);if(target.origin===self.location.origin&&target.pathname==='/')url=target.pathname+target.search+target.hash;}catch{}
   event.waitUntil(self.registration.showNotification('Garrigram',{
     body:typeof data.body==='string'?data.body.slice(0,200):'New photos from the team.',
-    tag:data.tag==='garrigram-test'?'garrigram-test':'garrigram-photos',
+    tag:['garrigram-test','garrigram-comments'].includes(data.tag)?data.tag:'garrigram-photos',
     renotify:false,data:{url},
   }));
 });

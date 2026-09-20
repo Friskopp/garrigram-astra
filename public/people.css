@@ -12,3 +12,4 @@
 .map-layout #location-notices{display:none}
 
 .notification-settings{border-top:1px solid var(--line);margin-top:24px;padding-top:20px}.notification-settings h3{font-size:15px;margin-bottom:14px}.notification-row{display:flex;align-items:center;justify-content:space-between;gap:16px}.notification-row label{font-size:13px;cursor:pointer}.notification-row [role=switch]{width:46px;height:28px;padding:3px;flex-shrink:0;background:#565c50;border:1px solid #76816c;border-radius:30px;display:flex;align-items:center}.notification-row [role=switch] span{width:20px;height:20px;border-radius:50%;background:var(--text);transition:transform .15s}.notification-row [aria-checked=true]{background:var(--mint);border-color:var(--mint)}.notification-row [aria-checked=true] span{background:#1d2921;transform:translateX(18px)}#notification-test{margin-top:12px}#notification-help{line-height:1.6}
+.notification-row+.notification-row{margin-top:14px}
