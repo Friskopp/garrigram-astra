@@ -59,7 +59,7 @@ test('uploads are grouped, encrypted, signed, exclude old/own/deleted photos and
   f.post('first');f.post('second');await scheduleNotifications(f.env,f.now);assert.equal(f.jobs.length,1);
   let calls=0,payload;
   const transport=async(endpoint,options)=>{
-   calls++;assert.equal(endpoint,f.subscription.endpoint);assert.equal(options.redirect,'error');payload=f.decrypt(options);
+   calls++;assert.equal(endpoint,f.subscription.endpoint);assert.equal(options.redirect,'manual');payload=f.decrypt(options);
    assert.ok(!JSON.stringify(payload).includes('private caption'));assert.equal(payload.body,'2 new photos from the team.');assert.equal(payload.url,'/#feed');
    const headers=new Headers(options.headers);assert.equal(headers.get('content-encoding'),'aes128gcm');
    const token=headers.get('authorization').match(/t=([^, ]+)/)[1],parts=token.split('.');
@@ -88,11 +88,12 @@ test('failed deliveries retry, revoked subscriptions stop delivery, and missing 
 });
 
 test('Web Push encryption and dispatch work inside the actual Cloudflare runtime',async()=>{
- const {Miniflare,convertV4MiniflareOptions}=await import('miniflare');const {build}=await import('esbuild');const f=await fixture();let mf;
+ const {Miniflare,convertV4MiniflareOptions}=await import('miniflare');const {build}=await import('esbuild');const f=await fixture();let mf,providerRedirect=false,outboundCalls=0;
  try{
-  const bundled=await build({stdin:{contents:`import {sendPush} from './cloudflare/notifications.mjs'; export default {async fetch(request,env){const sub=await request.json();let sent;await sendPush(env,sub,{body:'Runtime test'},async(url,options)=>{sent={url,headers:Object.fromEntries(new Headers(options.headers)),body:Array.from(new Uint8Array(options.body))};return new Response(null,{status:201});});return Response.json(sent);}};`,resolveDir:process.cwd()},bundle:true,format:'esm',platform:'browser',write:false});
-  mf=new Miniflare({...convertV4MiniflareOptions({name:'push-runtime-test',modules:true,script:bundled.outputFiles[0].text,compatibilityDate:'2026-09-19',compatibilityFlags:['nodejs_compat'],bindings:{VAPID_PUBLIC_KEY:f.env.VAPID_PUBLIC_KEY,VAPID_PRIVATE_KEY:f.env.VAPID_PRIVATE_KEY}})});
+  const bundled=await build({stdin:{contents:`import {sendPush} from './cloudflare/notifications.mjs'; export default {async fetch(request,env){const sub=await request.json();try{return await sendPush(env,sub,{body:'Runtime test'});}catch(error){return new Response(error.name+': '+error.message,{status:500});}}};`,resolveDir:process.cwd()},bundle:true,format:'esm',platform:'browser',write:false});
+  mf=new Miniflare({...convertV4MiniflareOptions({name:'push-runtime-test',outboundService:async request=>{outboundCalls++;if(providerRedirect)return new Response(null,{status:302,headers:{location:'https://evil.example/'}});return Response.json({url:request.url,headers:Object.fromEntries(request.headers),body:Array.from(new Uint8Array(await request.arrayBuffer()))});},modules:true,script:bundled.outputFiles[0].text,compatibilityDate:'2026-09-19',compatibilityFlags:['nodejs_compat'],bindings:{VAPID_PUBLIC_KEY:f.env.VAPID_PUBLIC_KEY,VAPID_PRIVATE_KEY:f.env.VAPID_PRIVATE_KEY}})});
   const response=await mf.dispatchFetch('https://app.example/',{method:'POST',body:JSON.stringify({endpoint:f.subscription.endpoint,...f.subscription.keys})});assert.equal(response.status,200,await response.clone().text());
-  const sent=await response.json();assert.deepEqual(f.decrypt({...sent,body:Buffer.from(sent.body)}),{body:'Runtime test'});
+  const sent=await response.json();assert.deepEqual(f.decrypt({...sent,body:Buffer.from(sent.body)}),{body:'Runtime test'});assert.equal(outboundCalls,1);
+  providerRedirect=true;const redirect=await mf.dispatchFetch('https://app.example/',{method:'POST',redirect:'manual',body:JSON.stringify({endpoint:f.subscription.endpoint,...f.subscription.keys})});assert.equal(redirect.status,302);assert.equal(outboundCalls,2,'Redirect destination must never receive the signed push request');
  }finally{await mf?.dispose();f.sqlite.close();}
 });

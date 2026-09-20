@@ -73,10 +73,15 @@ export async function scheduleNotifications(env,now=Date.now()){
 }
 export async function sendPush(env,sub,data,transport=fetch){
   if(!validEndpoint(sub.endpoint))throw new Error('Unsupported stored push endpoint');
-  const payload=await buildPushPayload({data:JSON.stringify(data),options:{ttl:3600}},
+  let payload;
+  try{payload=await buildPushPayload({data:JSON.stringify(data),options:{ttl:3600}},
     {endpoint:sub.endpoint,keys:{p256dh:sub.p256dh,auth:sub.auth}},
-    {subject:'https://garrigram.garrigram.workers.dev',publicKey:env.VAPID_PUBLIC_KEY,privateKey:env.VAPID_PRIVATE_KEY});
-  return transport(sub.endpoint,{...payload,redirect:'error',signal:AbortSignal.timeout(15000)});
+    {subject:'https://garrigram.garrigram.workers.dev',publicKey:env.VAPID_PUBLIC_KEY,privateKey:env.VAPID_PRIVATE_KEY});}
+  catch(error){error.pushStage='encryption';throw error;}
+  // workerd supports only follow/manual. Manual never forwards signing headers
+  // to redirect destinations; the consumer rejects every non-2xx response.
+  try{return await transport(sub.endpoint,{...payload,redirect:'manual',signal:AbortSignal.timeout(15000)});}
+  catch(error){error.pushStage='provider-request';throw error;}
 }
 export async function consumeNotifications(batch,env,transport=fetch,now=Date.now()){
   for(const message of batch.messages){
@@ -100,12 +105,12 @@ export async function consumeNotifications(batch,env,transport=fetch,now=Date.no
       if(!await env.DB.prepare('SELECT id FROM push_subscriptions WHERE id=?').bind(id).first()){message.ack();continue;}
       const response=await sendPush(env,sub,data,transport);
       if(response.status===404||response.status===410){await env.DB.prepare('DELETE FROM push_subscriptions WHERE id=?').bind(id).run();message.ack();continue;}
-      if(!response.ok)throw new Error('Push provider status '+response.status);
+      if(!response.ok)throw Object.assign(new Error('Push provider rejected delivery'),{pushStage:'provider-response',pushStatus:response.status});
       await env.DB.prepare('UPDATE push_subscriptions SET cursor=MAX(cursor,?),lease_until=0,last_sent=?,updated_at=? WHERE id=?').bind(end,test?sub.last_sent:now,now,id).run();
       message.ack();
-    }catch{
+    }catch(error){
       // Never log endpoints, subscription secrets, identities or photo contents.
-      console.warn('Notification delivery will retry');
+      console.warn('Notification delivery will retry',{stage:error.pushStage||'database',status:error.pushStatus||null,error:['TypeError','OperationError','DataError','AbortError','TimeoutError'].includes(error.name)?error.name:'Error'});
       if(leased)await env.DB.prepare('UPDATE push_subscriptions SET lease_until=0 WHERE id=?').bind(id).run();
       message.retry({delaySeconds:120});
     }
