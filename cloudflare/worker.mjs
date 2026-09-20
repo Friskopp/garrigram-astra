@@ -1,6 +1,8 @@
+import { notificationRoute, scheduleNotifications, consumeNotifications } from './notifications.mjs';
 import { authenticate, HttpError } from './auth.mjs';
 import { validateEffect } from '../public/effects.mjs';
 import { servePhoto, photoKeys } from './photos.mjs';
+import { socialRoute, withProfiles, cleanSocial } from '../social.mjs';
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_REQUEST_BYTES = MAX_IMAGE_BYTES + 64 * 1024;
@@ -83,6 +85,8 @@ async function createPost(request, env, identity) {
 // The deployed default always uses cryptographically verified Access identity.
 export function createApp(verifyIdentity = authenticate) {
   return {
+    async scheduled(event, env) { await cleanSocial(env.DB); await scheduleNotifications(env); },
+    async queue(batch, env) { await consumeNotifications(batch, env); },
     async fetch(request, env) {
       try {
         const identity = await verifyIdentity(request, env);
@@ -91,14 +95,18 @@ export function createApp(verifyIdentity = authenticate) {
         if (!['GET','HEAD'].includes(method)) {
           if (request.headers.get('origin') !== url.origin) fail('Cross-origin requests are not allowed.',403);
         }
+        const notification = await notificationRoute(request, env, identity.email);
+        if (notification) return notification;
+        const social = await socialRoute(request, env, identity.email);
+        if (social) return social;
         if (url.pathname === '/api/session' && method === 'GET') return json({ email: identity.email, hosted: true });
         if (url.pathname === '/api/posts' && method === 'GET') {
-          const { results } = await env.DB.prepare(`SELECT p.id,p.author,p.caption,p.image,p.location,p.lat,p.lng,p.created_at,p.demo,p.effect,p.owner_email=? AS can_edit,
+          const { results } = await env.DB.prepare(`SELECT p.owner_email,p.id,p.author,p.caption,p.image,p.location,p.lat,p.lng,p.created_at,p.demo,p.effect,p.owner_email=? AS can_edit,
             (SELECT COUNT(*) FROM likes WHERE post_id=p.id) AS likes,
             (SELECT COUNT(*) FROM comments WHERE post_id=p.id) AS comment_count,
             EXISTS(SELECT 1 FROM likes WHERE post_id=p.id AND visitor=?) AS liked
             FROM posts p ORDER BY created_at DESC`).bind(identity.email,identity.email).all();
-          return json(results);
+          return json(await withProfiles(env.DB,results,'owner_email'));
         }
         if (url.pathname === '/api/posts' && method === 'POST') return await createPost(request, env, identity);
         const postMatch=url.pathname.match(/^\/api\/posts\/([a-zA-Z0-9-]+)$/);
@@ -145,8 +153,8 @@ export function createApp(verifyIdentity = authenticate) {
           if (method === 'GET') {
             const before=url.searchParams.get('before');
             if(before!==null && (!/^\d+$/.test(before)||!Number.isSafeInteger(Number(before))||Number(before)<1)) fail('Invalid comment page.');
-            const {results}=await env.DB.prepare('SELECT id,author,body,created_at,owner_email=? AS can_edit FROM comments WHERE post_id=? AND id<? ORDER BY id DESC LIMIT 21').bind(identity.email,comment[1],before?Number(before):Number.MAX_SAFE_INTEGER).all();
-            const page=results.slice(0,20);
+            const {results}=await env.DB.prepare('SELECT id,author,body,created_at,owner_email,owner_email=? AS can_edit FROM comments WHERE post_id=? AND id<? ORDER BY id DESC LIMIT 21').bind(identity.email,comment[1],before?Number(before):Number.MAX_SAFE_INTEGER).all();
+            const page=await withProfiles(env.DB,results.slice(0,20),'owner_email');
             return json({comments:page.reverse(),hasMore:results.length>20,nextCursor:page[0]?.id||null});
           }
           let body;

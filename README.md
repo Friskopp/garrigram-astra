@@ -76,3 +76,34 @@ Cloudflare Images makes WebP variants on demand: a 160px longest-edge map thumbn
 Photos mode loads thumbnails only within the viewport plus a small buffer. Heatmap mode shows only the density layer, with no photo pins; density includes all matching coordinates. Unchanged markers survive refreshes. Images use private browser caching with authenticated ETag revalidation, so unchanged images return 304 instead of downloading again. No public photo cache is enabled.
 
 The Node preview on port 4317 serves original images for variant URLs. Use the Cloudflare preview to test resizing; local Images simulation is limited. A temporary local config with `images.remote: true` exercises the real processor while keeping D1/R2 local. See [Cloudflare image setup](CLOUDFLARE.md#image-optimization).
+
+## Trip profiles and People map
+
+Map modes are Photos, Heatmap and People. Profiles have an optional cropped avatar and a display name, linked to the verified account in production and the browser visitor ID locally. Saving a profile updates the name/avatar shown beside existing owned posts and comments. Crop controls support pointer dragging and keyboard-accessible zoom and position sliders. The browser produces a small square JPEG; Cloudflare Images optimizes hosted avatars to 256px WebP when available. Avatar files stay private, count toward storage usage, and are removed on replacement/removal. Concurrent replacements use an optimistic update to avoid orphaned uploads.
+
+People check-ins are explicit snapshots of a user's current position with an optional 200-character message. They expire exactly one hour after the server accepts them. Updating is a new explicit share and starts a fresh hour; Stop sharing removes the record immediately. No background tracking is used. Pins show the age of the shared position, and the selected person's card offers directions. Photo locations and temporary People locations are separate.
+
+“Where is everyone?” sends an in-app request, optionally with a message, lasting one hour. Each sender can ask once every ten minutes; the server enforces the cooldown atomically. Requests appear in the feed, never share a recipient's location automatically, and can be dismissed per account. The app refreshes People data every 15 seconds while visible. Location requests stay in-app; optional push alerts are for new photos only.
+
+Expired check-ins and requests are excluded immediately and purged on People API access; a production scheduled handler also purges every minute. For a later trip archive, exclude `check_ins`, `location_requests`, and `request_dismissals`. Cloudflare database backups/Time Travel have their own retention; expiry is not a promise to erase historical provider backups instantly.
+
+### Isolated local demo
+
+```sh
+PORT=4319 DATA_DIR=/private/tmp/garrigram-people-demo node --watch server.mjs
+# In another terminal:
+node scripts/seed-people-demo.mjs
+```
+
+Open `http://127.0.0.1:4319/#map` and choose People. The seeder only accepts local HTTP URLs and creates four fictional colleagues in Tirana plus a location request. These check-ins expire normally; rerun the script to refresh them. Production data is never copied into the demo. Real browser geolocation still requires explicit permission when testing Share my location.
+
+
+## Optional photo notifications
+
+Edit profile → Notifications → **New photos on this device** is off by default. Enabling it requests browser permission, stores that device’s Web Push subscription under the verified account, and reveals **Send test notification**. Turning it off removes the server subscription immediately; other devices are unchanged. On iPhone/iPad, add Garrigram to the Home Screen and open it there first. A manifest and GA app icons support installation. The local Node demo displays the control but does not send push messages.
+
+A D1 trigger records a lightweight event atomically with each new photo (never old/demo posts). A one-minute scheduled sweep queues eligible devices, grouping photos at least two minutes old and spacing deliveries at least two minutes apart. The consumer excludes the recipient’s own photos and deleted posts, encrypts the payload with Web Push, and retries transient failures. A per-device database cursor and lease suppress ordinary duplicate queue deliveries; ambiguous network failures can still be delivered more than once, so the client also replaces alerts using a stable tag. Push-provider acceptance is not a guarantee of display on a phone (Focus, permission and connectivity still apply).
+
+Notifications contain only a photo count and a link, with no captions, images, names or location data. A single-photo alert opens its post; grouped alerts open the feed. Access login remains required to see content. The service worker does not intercept fetches or cache private content. Expired provider subscriptions are removed on 404/410; idle subscriptions expire after 90 days, and pending events after 24 hours. Pending events and `push_subscriptions` should be excluded from trip archives.
+
+Tests cover opt-in and ownership, endpoint restrictions, device limits, cross-origin denial, grouping, encrypted payload decryption and VAPID signatures, actual Cloudflare runtime encryption, retries/revocation, UI permission states, and safe notification navigation. A real iPhone/Android delivery check still requires a user to enable notifications and tap **Send test notification** on that device.

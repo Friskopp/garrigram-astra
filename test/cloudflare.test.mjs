@@ -31,7 +31,7 @@ test('Access authentication rejects unsigned, expired, wrong-audience and outsid
 });
 
 test('Production rejects unauthenticated requests to pages, APIs, and photo files before storage access',async()=>{
- for(const pathname of ['/','/app.js','/api/posts','/uploads/example.jpg','/uploads/00000000-0000-0000-0000-000000000000.jpg?size=map','/api/posts/example/comments','/api/posts/example/like']){
+ for(const pathname of ['/','/app.js','/sw.js','/manifest.webmanifest','/api/notifications','/api/notifications/status','/api/notifications/test','/api/posts','/uploads/example.jpg','/uploads/00000000-0000-0000-0000-000000000000.jpg?size=map','/api/posts/example/comments','/api/posts/example/like']){
   const response=await worker.fetch(new Request('https://app.example'+pathname),authEnv);
   assert.equal(response.status,401);assert.equal(response.headers.get('cache-control'),'private, no-store');
  }
@@ -74,6 +74,12 @@ export default {fetch(request,env){
   const {id}=await response.json();let posts=await(await req('/api/posts')).json();assert.equal(posts.length,1);assert.equal(posts[0].location,'Stockholm');assert.equal(posts[0].owner_email,undefined);
   assert.equal(posts[0].can_edit,1);
   const mutate=(route,method,body,email='local-preview@garrison.se')=>req(route,{method,headers:{'content-type':'application/json','x-test-email':email},...(body===undefined?{}:{body:JSON.stringify(body)})});
+  assert.equal((await mutate('/api/profile','PUT',{name:'Cloudflare profile'})).status,200);
+  const profile=await(await req('/api/profile')).json();assert.equal(profile.name,'Cloudflare profile');assert.equal(profile.owner_id,undefined);
+  assert.equal((await(await req('/api/posts')).json())[0].author,'Cloudflare profile');
+  assert.equal((await mutate('/api/check-in','PUT',{lat:41.3275,lng:19.8187,message:'Cloudflare local check-in'})).status,200);
+  assert.equal((await(await req('/api/people')).json()).people[0].id,profile.id);
+
   assert.equal((await mutate(`/api/posts/${id}`,'PATCH',{caption:'forged',owner_email:'other@garrison.se'},'other@garrison.se')).status,403);
   assert.equal((await mutate(`/api/posts/${id}`,'DELETE',undefined,'other@garrison.se')).status,403);
   assert.equal((await(await req('/api/posts',{headers:{'x-test-email':'other@garrison.se'}})).json())[0].can_edit,0);
@@ -109,6 +115,8 @@ export default {fetch(request,env){
   const invalid=payload();invalid.set('photo',new Blob(['not a photo'],{type:'image/jpeg'}),'fake.jpg');assert.equal((await req('/api/posts',{method:'POST',body:invalid})).status,400);
   assert.equal((await db.prepare('SELECT bytes FROM storage_usage WHERE id=1').first()).bytes,image.byteLength);
   await mf.dispose();mf=start();db=await mf.getD1Database('DB');posts=await(await req('/api/posts')).json();assert.equal(posts.length,1);assert.equal(posts[0].likes,1);assert.equal((await req(posts[0].image)).status,200);assert.deepEqual(JSON.parse(posts[0].effect),effect);assert.equal(posts[0].comment_count,23);assert.equal((await(await req(`/api/posts/${id}/comments`)).json()).comments.length,20);assert.deepEqual(await(await req(`/api/posts/${id}/like`)).json(),[{author:'Test Teammate'}]);
+  assert.equal((await(await req('/api/profile')).json()).name,'Cloudflare profile');
+  assert.equal((await(await req('/api/people')).json()).people[0].id,profile.id);
   await db.prepare('UPDATE storage_usage SET bytes=7999999999 WHERE id=1').run();assert.equal((await req('/api/posts',{method:'POST',body:payload()})).status,507);
   assert.equal((await(await mf.getR2Bucket('PHOTOS')).list()).objects.length,1);
   await db.prepare('UPDATE storage_usage SET bytes=? WHERE id=1').bind(image.byteLength).run();

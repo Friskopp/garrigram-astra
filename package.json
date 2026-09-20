@@ -10,7 +10,7 @@
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
     "test": "node --test test/*.test.mjs",
-    "check": "node --check server.mjs && node --check public/app.js && node --check cloudflare/worker.mjs && node --check cloudflare/auth.mjs",
+    "check": "node --check server.mjs && node --check public/app.js && node --check cloudflare/worker.mjs && node --check cloudflare/auth.mjs && node --check social.mjs && node --check public/people.mjs && node --check cloudflare/notifications.mjs && node --check public/notifications.mjs && node --check public/sw.js",
     "cf:login": "wrangler login",
     "cf:dev": "wrangler dev --config wrangler.local.jsonc",
     "cf:migrate:local": "wrangler d1 migrations apply garrigram-local --local --config wrangler.local.jsonc",
@@ -27,6 +27,7 @@
     "wrangler": "4.135.0"
   },
   "dependencies": {
+    "@block65/webcrypto-web-push": "^2.0.0",
     "@mediapipe/tasks-vision": "1.0.1",
     "jose": "6.2.12"
   }

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { validateEffect } from './public/effects.mjs';
+import { socialRoute, withProfiles } from './social.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(root, 'data'));
@@ -20,13 +21,34 @@ CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id,id DESC);`);
 if(!db.prepare('PRAGMA table_info(likes)').all().some(column=>column.name==='author')) db.exec("ALTER TABLE likes ADD COLUMN author TEXT NOT NULL DEFAULT 'A teammate'");
 if(!db.prepare('PRAGMA table_info(posts)').all().some(column=>column.name==='effect')) db.exec('ALTER TABLE posts ADD COLUMN effect TEXT');
 for(const table of ['posts','comments'])if(!db.prepare(`PRAGMA table_info(${table})`).all().some(column=>column.name==='owner_visitor'))db.exec(`ALTER TABLE ${table} ADD COLUMN owner_visitor TEXT`);
+// Use the same social routes/schema as production through a small SQLite/R2 adapter.
+if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='profiles'").get()){
+  db.exec('CREATE TABLE IF NOT EXISTS storage_usage (id INTEGER PRIMARY KEY,bytes INTEGER NOT NULL DEFAULT 0); INSERT OR IGNORE INTO storage_usage(id,bytes) VALUES(1,0)');
+  db.exec(await readFile(path.join(root,'cloudflare/migrations/0006_people.sql'),'utf8'));
+}
+const socialDB={
+  prepare(sql){
+    const statement=db.prepare(sql);
+    return {bind(...args){return {
+      async first(){return statement.get(...args)||null;},
+      async all(){return {results:statement.all(...args)};},
+      async run(){return {meta:statement.run(...args)};}
+    };}};
+  }
+};
+await mkdir(path.join(dataDir,'avatars'),{recursive:true});
+const socialEnv={DB:socialDB,PHOTOS:{
+  async put(key,bytes){await writeFile(path.join(dataDir,key),new Uint8Array(bytes));},
+  async delete(key){try{await unlink(path.join(dataDir,key));}catch(e){if(e.code!=='ENOENT')throw e;}},
+  async get(key){try{const bytes=await readFile(path.join(dataDir,key));return {body:bytes,writeHttpMetadata(headers){headers.set('Content-Type',mime[path.extname(key)]);}};}catch(e){if(e.code==='ENOENT')return null;throw e;}}
+}};
 if(process.env.SEED_DEMO !== '0') {
   const samples=JSON.parse(await readFile(path.join(root,'seed.json'),'utf8'));
   const insert=db.prepare('INSERT OR IGNORE INTO posts (id,author,caption,image,location,lat,lng,created_at,demo) VALUES (?,?,?,?,?,?,?,?,1)');
   for(const p of samples) insert.run(p.id,p.author,p.caption,p.image,p.location,p.lat,p.lng,p.created_at);
 }
 const json = (res, status, value) => { res.writeHead(status, {'Content-Type':'application/json','Cache-Control':'no-store'}); res.end(JSON.stringify(value)); };
-const mime = {'.mjs':'text/javascript; charset=utf-8','.wasm':'application/wasm','.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp':'image/webp','.woff2':'font/woff2'};
+const mime = {'.webmanifest':'application/manifest+json','.mjs':'text/javascript; charset=utf-8','.wasm':'application/wasm','.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp':'image/webp','.woff2':'font/woff2'};
 const readBody = async req => { let length=0; const chunks=[]; for await (const chunk of req) { length+=chunk.length; if(length>22*1024*1024) throw Object.assign(new Error('Photo is too large. Please choose one under 15 MB.'), {status:413}); chunks.push(chunk); } try { return JSON.parse(Buffer.concat(chunks).toString()); } catch { throw Object.assign(new Error('Invalid request.'), {status:400}); } };
 async function readPost(req) {
   if (!req.headers['content-type']?.startsWith('multipart/form-data')) return readBody(req);
@@ -52,10 +74,17 @@ export const server = http.createServer(async (req,res) => {
       const origin=req.headers.origin;
       if(origin && new URL(origin).host!==req.headers.host) return json(res,403,{error:'Cross-origin requests are not allowed.'});
     }
+    if(['/api/profile','/api/people','/api/check-in','/api/location-requests'].includes(url.pathname)||url.pathname.startsWith('/api/location-requests/')||url.pathname.startsWith('/avatars/')){
+      const who=url.pathname.startsWith('/avatars/')?'local-avatar-viewer':visitor(req);
+      const request=new Request('http://'+req.headers.host+req.url,{method:req.method,headers:req.headers,...(!['GET','HEAD'].includes(req.method)?{body:req,duplex:'half'}:{})});
+      const response=await socialRoute(request,socialEnv,who);
+      if(response){res.writeHead(response.status,Object.fromEntries(response.headers));res.end(Buffer.from(await response.arrayBuffer()));return;}
+    }
+    if(url.pathname==='/api/notifications' && req.method==='GET') return json(res,200,{available:false,publicKey:null});
     if(url.pathname==='/api/session' && req.method==='GET') return json(res,200,{hosted:false});
     if(url.pathname==='/api/posts' && req.method==='GET') {
       const who=visitor(req);
-      return json(res,200,db.prepare(`SELECT p.*, p.owner_visitor=? AS can_edit, (SELECT COUNT(*) FROM comments WHERE post_id=p.id) AS comment_count, (SELECT COUNT(*) FROM likes WHERE post_id=p.id) AS likes, EXISTS(SELECT 1 FROM likes WHERE post_id=p.id AND visitor=?) AS liked FROM posts p ORDER BY demo ASC, created_at DESC`).all(who,who).map(({owner_visitor,...post})=>post));
+      return json(res,200,await withProfiles(socialDB,db.prepare(`SELECT p.*, p.owner_visitor=? AS can_edit, (SELECT COUNT(*) FROM comments WHERE post_id=p.id) AS comment_count, (SELECT COUNT(*) FROM likes WHERE post_id=p.id) AS likes, EXISTS(SELECT 1 FROM likes WHERE post_id=p.id AND visitor=?) AS liked FROM posts p ORDER BY demo ASC, created_at DESC`).all(who,who),'owner_visitor'));
     }
     if(url.pathname==='/api/posts' && req.method==='POST') {
       const who=visitor(req); const body=await readPost(req);
@@ -113,8 +142,8 @@ export const server = http.createServer(async (req,res) => {
       if(req.method==='GET') {
         const before=url.searchParams.get('before');
         if(before!==null && (!/^\d+$/.test(before)||!Number.isSafeInteger(Number(before))||Number(before)<1)) fail('Invalid comment page.');
-        const rows=db.prepare('SELECT id,author,body,created_at,owner_visitor=? AS can_edit FROM comments WHERE post_id=? AND id<? ORDER BY id DESC LIMIT 21').all(who,commentMatch[1],before?Number(before):Number.MAX_SAFE_INTEGER);
-        const page=rows.slice(0,20);
+        const rows=db.prepare('SELECT id,author,body,created_at,owner_visitor,owner_visitor=? AS can_edit FROM comments WHERE post_id=? AND id<? ORDER BY id DESC LIMIT 21').all(who,commentMatch[1],before?Number(before):Number.MAX_SAFE_INTEGER);
+        const page=await withProfiles(socialDB,rows.slice(0,20),'owner_visitor');
         return json(res,200,{comments:page.reverse(),hasMore:rows.length>20,nextCursor:page[0]?.id||null});
       }
       const body=await readBody(req);
