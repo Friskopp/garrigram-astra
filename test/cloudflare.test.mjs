@@ -31,7 +31,7 @@ test('Access authentication rejects unsigned, expired, wrong-audience and outsid
 });
 
 test('Production rejects unauthenticated requests to pages, APIs, and photo files before storage access',async()=>{
- for(const pathname of ['/','/app.js','/api/posts','/uploads/example.jpg','/api/posts/example/comments','/api/posts/example/like']){
+ for(const pathname of ['/','/app.js','/api/posts','/uploads/example.jpg','/uploads/00000000-0000-0000-0000-000000000000.jpg?size=map','/api/posts/example/comments','/api/posts/example/like']){
   const response=await worker.fetch(new Request('https://app.example'+pathname),authEnv);
   assert.equal(response.status,401);assert.equal(response.headers.get('cache-control'),'private, no-store');
  }
@@ -43,7 +43,15 @@ test('Cloudflare runtime persists multipart uploads and reactions in D1/R2 acros
  const dir=await mkdtemp(path.join(tmpdir(),'garrigram-cf-'));
  let mf;
  try{
-  const bundled=await build({stdin:{contents:`import {createApp} from './cloudflare/worker.mjs';export default createApp(async request=>({email:request.headers.get('x-test-email')||'local-preview@garrison.se'}));`,resolveDir:process.cwd()},bundle:true,format:'esm',platform:'browser',write:false});
+  const bundled=await build({stdin:{contents:`import {createApp} from './cloudflare/worker.mjs';
+const app=createApp(async request=>({email:request.headers.get('x-test-email')||'local-preview@garrison.se'}));
+export default {fetch(request,env){
+  if(request.headers.has('x-test-images'))env.IMAGES={input(){return {transform(options){
+    if(options.fit!=='scale-down'||options.width!==options.height)throw new Error('Unexpected crop');
+    return {async output(output){if(request.headers.get('x-test-images')==='fail')throw new Error('Quota exceeded');return {response:()=>new Response('webp-fixture-'+options.width,{headers:{'content-type':'image/webp'}})};}};
+  }}}};
+  return app.fetch(request,env);
+}};`,resolveDir:process.cwd()},bundle:true,format:'esm',platform:'browser',write:false});
   const start=()=>new Miniflare({...convertV4MiniflareOptions({name:'garrigram-test',modules:true,script:bundled.outputFiles[0].text,compatibilityDate:'2026-09-19',compatibilityFlags:['nodejs_compat'],d1Databases:{DB:'test-db'},d1Persist:path.join(dir,'d1'),r2Buckets:{PHOTOS:'test-photos'},r2Persist:path.join(dir,'r2')}),resourcePersistencePath:path.join(dir,'resources')});
   mf=start();let db=await mf.getD1Database('DB');
   // D1 exec parses by line. Flatten each migration statement, preserving trigger blocks.
@@ -75,7 +83,9 @@ test('Cloudflare runtime persists multipart uploads and reactions in D1/R2 acros
   assert.equal((await mutate(`/api/posts/${id}/effect`,'PUT',{effect})).status,200);
   assert.equal((await mutate(`/api/posts/${id}/effect`,'PUT',{effect:{bad:true}})).status,400);
   assert.equal((await mutate('/api/posts/missing/effect','PUT',{effect})).status,404);
-  const photo=await req(posts[0].image);assert.equal(photo.status,200);assert.equal(photo.headers.get('content-type'),'image/jpeg');assert.equal((await photo.arrayBuffer()).byteLength,image.byteLength);assert.equal(photo.headers.get('cache-control'),'private, no-store');
+  const photo=await req(posts[0].image);assert.equal(photo.status,200);assert.equal(photo.headers.get('content-type'),'image/jpeg');assert.equal((await photo.arrayBuffer()).byteLength,image.byteLength);assert.equal(photo.headers.get('cache-control'),'private, max-age=0, must-revalidate');
+  assert.equal((await req(posts[0].image,{headers:{'if-none-match':photo.headers.get('etag')}})).status,304);
+  assert.equal((await req(posts[0].image+'?size=arbitrary')).status,404);
   for(let i=0;i<2;i++)assert.equal((await req(`/api/posts/${id}/like`,{method:'PUT',headers:{'content-type':'application/json','x-visitor-id':'fake-'+i},body:JSON.stringify({liked:true,author:'Test Teammate'})})).status,200);
   assert.equal((await(await req('/api/posts')).json())[0].likes,1);
   assert.deepEqual(await(await req(`/api/posts/${id}/like`)).json(),[{author:'Test Teammate'}]);
@@ -107,6 +117,26 @@ test('Cloudflare runtime persists multipart uploads and reactions in D1/R2 acros
   assert.equal((await req('/api/posts',{method:'POST',body:payload()})).status,429);
   await assert.rejects(()=>insert().run(),/daily_upload_limit_exceeded/);
   assert.equal((await(await mf.getR2Bucket('PHOTOS')).list()).objects.length,1);
+  // Existing images get bounded variants on demand; concurrent requests share generation.
+  const mapUrl=posts[0].image+'?size=map',feedUrl=posts[0].image+'?size=feed';
+  const thumbs=await Promise.all([req(mapUrl,{headers:{'x-test-images':'ok'}}),req(mapUrl,{headers:{'x-test-images':'ok'}})]);
+  for(const thumb of thumbs){assert.equal(thumb.headers.get('content-type'),'image/webp');assert.equal(await thumb.text(),'webp-fixture-160');}
+  const feed=await req(feedUrl,{headers:{'x-test-images':'ok'}});assert.equal(await feed.text(),'webp-fixture-960');
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM photo_variants').first()).n,2);
+  assert.equal((await db.prepare('SELECT bytes FROM storage_usage WHERE id=1').first()).bytes,image.byteLength+29+32);
+  await mf.dispose();mf=start();db=await mf.getD1Database('DB');
+  // With no processor configured after restart, the persisted variant is still served.
+  const cached=await req(mapUrl);assert.equal(await cached.text(),'webp-fixture-160');
+  const etag=cached.headers.get('etag');
+  assert.equal((await req(mapUrl,{headers:{'if-none-match':'W/'+etag}})).status,304);
+  assert.equal((await req(mapUrl,{method:'HEAD'})).headers.get('content-length'),'16');
+  // A transformation failure falls back to the intact original without saving a bad variant.
+  const extra=await req('/api/posts',{method:'POST',body:payload(),headers:{'x-test-email':'second@garrison.se'}});
+  const extraId=(await extra.json()).id;
+  const extraPhoto=(await(await req('/api/posts')).json()).find(p=>p.id===extraId).image;
+  const fallback=await req(extraPhoto+'?size=map',{headers:{'x-test-images':'fail'}});
+  assert.equal(fallback.headers.get('content-type'),'image/jpeg');assert.equal((await fallback.arrayBuffer()).byteLength,image.byteLength);
+  await mutate('/api/posts/'+extraId,'DELETE',undefined,'second@garrison.se');
   const comments=await(await req(`/api/posts/${id}/comments`)).json(),commentId=comments.comments[0].id;
   assert.equal(comments.comments[0].can_edit,1);
   const otherComments=await(await req(`/api/posts/${id}/comments`,{headers:{'x-test-email':'other@garrison.se'}})).json();assert.equal(otherComments.comments[0].can_edit,0);
@@ -120,5 +150,7 @@ test('Cloudflare runtime persists multipart uploads and reactions in D1/R2 acros
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM likes WHERE post_id=?').bind(id).first()).n,0);
   assert.equal((await(await mf.getR2Bucket('PHOTOS')).list()).objects.length,0);
   assert.equal((await db.prepare('SELECT bytes FROM storage_usage WHERE id=1').first()).bytes,29);
+  assert.equal((await req(mapUrl,{headers:{'if-none-match':etag}})).status,404);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM photo_variants').first()).n,0);
  }finally{if(mf)await mf.dispose();await rm(dir,{recursive:true,force:true});}
 });

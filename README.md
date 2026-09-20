@@ -63,8 +63,16 @@ The hosted app uses verified email for reaction identity, keeps photo storage pr
 
 ## Cigarette version
 
-New uploads run through MediaPipe Face Landmarker in the browser. The model and WebAssembly are served from this app; images are not sent to an external image-processing service. Up to 50 detected faces receive a playful cigarette overlay. The **ge ciggen en chans** on/off switch toggles between the original and the cigarette overlay. The resized photo remains intact. The button is visible on existing posts too: tapping it generates and saves a missing overlay. If no face is detected or processing fails, users can still post the original. Small, obscured, or side-facing faces may be missed.
+New uploads run through MediaPipe Face Landmarker in the browser. The model and WebAssembly are served from this app; face detection stays on the device. Up to 50 detected faces receive a playful cigarette overlay. The **ge ciggen en chans** on/off switch toggles between the original and the cigarette overlay. The resized photo remains intact. The button is visible on existing posts too: tapping it generates and saves a missing overlay. If no face is detected or processing fails, users can still post the original. Small, obscured, or side-facing faces may be missed.
 
 Run `npm run prepare:effects` after dependency installation. This copies the pinned `@mediapipe/tasks-vision` runtime and downloads Google’s versioned Face Landmarker model; generated assets are ignored by Git and prepared automatically by deployment. MediaPipe is Apache-2.0 licensed. See [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) for model documentation.
 
 Hosted ownership uses the verified Cloudflare Access email. Changing a display name never grants edit/delete rights. Local ownership uses the browser visitor ID; older local records without an owner remain read-only. Production posts already have email ownership, so these controls also work for existing posts.
+
+## Image delivery
+
+Cloudflare Images makes WebP variants on demand: a 160px longest-edge map thumbnail and a 960px feed image. They keep the original aspect ratio, so the cigarette overlay stays aligned. Detail views and face detection use the larger uploaded JPEG. Variants are stored once in private R2, counted toward the storage budget, and removed with the post. Existing uploads work automatically, with no re-upload or bulk backfill. Processor failures fall back to the original and pause generation for five minutes in that Worker instance.
+
+The map loads thumbnails only within the viewport plus a small buffer; heatmap density still includes all matching coordinates. Unchanged markers survive refreshes. Images use private browser caching with authenticated ETag revalidation, so unchanged images return 304 instead of downloading again. No public photo cache is enabled.
+
+The Node preview on port 4317 serves original images for variant URLs. Use the Cloudflare preview to test resizing; local Images simulation is limited. A temporary local config with `images.remote: true` exercises the real processor while keeping D1/R2 local. See [Cloudflare image setup](CLOUDFLARE.md#image-optimization).

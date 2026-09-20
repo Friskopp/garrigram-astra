@@ -19,6 +19,7 @@
     "migrations_dir": "cloudflare/migrations"
   }],
   "r2_buckets": [{"binding": "PHOTOS", "bucket_name": "garrigram-photos"}],
+  "images": {"binding": "IMAGES"},
   "vars": {
     "ACCESS_TEAM_DOMAIN": "https://garrigram.cloudflareaccess.com",
     "ACCESS_AUD": "06c3b8628a9892391efec6bf2db972ced11ca7f7f033c9e8c7ae969356218876",

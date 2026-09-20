@@ -16,7 +16,7 @@ $('profile-button').onclick=()=>{ $('display-name').value=displayName; $('profil
 const escapeHTML=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 let visitorId,displayName='';
 try { visitorId=localStorage.getItem('garrigram-visitor')||crypto.randomUUID(); localStorage.setItem('garrigram-visitor',visitorId); displayName=localStorage.getItem('garrigram-name')||''; } catch { visitorId=crypto.randomUUID(); }
-let posts=[],map,pickerMap,pickerMarker,markers=[],selectedLocation=null,photoData=null,photoEffect=null,photoTask=0,toastTimer,refreshing=false;
+let posts=[],map,pickerMap,pickerMarker,markers=new Map(),selectedLocation=null,photoData=null,photoEffect=null,photoTask=0,toastTimer,refreshing=false;
 const commentStates=new Map();
 const effectLevels=new Map();
 const effectJobs=new Map();
@@ -34,7 +34,7 @@ function relativeDate(date){const days=Math.floor((Date.now()-new Date(date).get
 function card(post,{detail=false}={}){const credit=credits[post.id];return `<article class="post" data-post="${escapeHTML(post.id)}"><header class="post-header"><span class="avatar" style="background:${post.demo?'#414937':'#344a40'}">${escapeHTML(initials(post.author))}</span><div><div class="post-author">${escapeHTML(post.author)}</div><div class="post-meta"><span>${post.demo?'A little inspiration':escapeHTML(relativeDate(post.created_at))}</span>${post.location?`<span>·</span><span>${escapeHTML(post.location.split(' · ')[0])}</span>`:''}</div></div>${post.demo?'<span class="demo-label">EXAMPLE</span>':''}${post.can_edit?'<div class="owner-actions"><button class="text-button" data-action="edit-post" aria-label="Edit post">Edit</button><button class="text-button" data-action="delete-post" aria-label="Delete post">Delete</button></div>':''}</header>${photoMarkup(post,detail)}<div class="post-content"><div class="post-actions"><button class="like-button ${post.liked?'liked':''}" data-action="like" aria-label="${post.liked?'Unlike':'Like'} moment by ${escapeHTML(post.author)}" aria-pressed="${Boolean(post.liked)}">${icon('heart')}<span>${post.liked?'Liked':'Like'}</span></button><button class="like-count text-button" data-action="likers" aria-label="Who liked this moment" ${post.likes?'':'hidden'}>${post.likes} ${post.likes===1?'like':'likes'}</button><button class="comment-toggle text-button" data-action="comments" aria-expanded="${Boolean(commentStates.get(post.id)?.open)}">${icon('comment')}<span>${commentLabel(post)}</span></button>${post.location?`<button class="location-link" data-action="map">${icon('pin')}${escapeHTML(post.location.split(' · ')[0])}</button>`:''}</div>${post.caption?`<p class="post-caption">${escapeHTML(post.caption)}</p>`:''}<div class="post-footer"><span>${post.demo?'EXAMPLE MOMENT':escapeHTML(new Date(post.created_at).toLocaleDateString('en-GB',{day:'numeric',month:'long'})).toUpperCase()}</span>${credit?`<a href="${credit[1]}" target="_blank" rel="noopener noreferrer">PHOTO: ${escapeHTML(credit[0].toUpperCase())} ↗</a>`:`<time datetime="${escapeHTML(post.created_at)}" title="${escapeHTML(new Date(post.created_at).toLocaleString())}">${escapeHTML(new Date(post.created_at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}))}</time>`}</div><div class="comments-container">${commentsMarkup(post)}</div></div></article>`;}
 function photoMarkup(post,full=false){
   const svg=effectSvg(post.effect).replace('xMidYMid slice',full?'xMidYMid meet':'xMidYMid slice'),level=effectLevels.get(post.id)||0,job=effectJobs.get(post.id);
-  const image=`<img class="post-photo" src="${escapeHTML(post.image)}" alt="${escapeHTML(post.caption||'Photo shared by '+post.author)}" ${full?'':'loading="lazy"'}>`;
+  const image=`<img class="post-photo" decoding="async" src="${escapeHTML(photoUrl(post,full?'original':'feed'))}" alt="${escapeHTML(post.caption||'Photo shared by '+post.author)}" ${full?'':'loading="lazy"'}>`;
   return `<div class="photo-stage ${svg?'has-effect':''} ${full?'full-stage':''}" data-effect-id="${post.id}">${full?image:`<button class="photo-button" data-action="photo" aria-label="View photo by ${escapeHTML(post.author)}">${image}</button>`}${svg?`<div class="photo-effect" style="clip-path:inset(0 ${100-level}% 0 0)">${svg}</div><span class="effect-status">${level?'Cig version':'Original'}</span>`:''}</div><div class="effect-controls" data-effect-id="${post.id}"><button type="button" class="effect-toggle text-button" data-action="effect" role="switch" aria-checked="${level>0}" ${job?.busy?'disabled':''}>ge ciggen en chans</button>${!svg?`<span class="effect-feedback" role="status">${escapeHTML(job?.message||'')}</span>`:''}</div>`;
 }
 function refreshPhoto(post){
@@ -88,7 +88,7 @@ async function openPostDetail(post){
   $('photo-dialog').showModal();$('photo-dialog').scrollTop=0;
   await loadComments(post);
 }
-async function loadPosts({quiet=false}={}){if(refreshing||(quiet&&document.activeElement?.closest('.comment-form')))return;refreshing=true;try{posts=await api('/api/posts');$('status').textContent='';renderFeed();if($('photo-dialog').open)renderPostDetail();if(map)renderMarkers();}catch(e){if(!quiet){$('status').textContent='We couldn’t load the feed. '+e.message+' ';const retry=document.createElement('button');retry.className='text-button';retry.textContent='Try again';retry.onclick=()=>loadPosts();$('status').append(retry);}}finally{refreshing=false;}}
+async function loadPosts({quiet=false}={}){if(refreshing||(quiet&&document.activeElement?.closest('.comment-form')))return;refreshing=true;try{const nextPosts=await api('/api/posts');if(quiet&&JSON.stringify(nextPosts)===JSON.stringify(posts)){if(map)renderMarkers();return;}posts=nextPosts;$('status').textContent='';renderFeed();if($('photo-dialog').open)renderPostDetail();if(map)renderMarkers();}catch(e){if(!quiet){$('status').textContent='We couldn’t load the feed. '+e.message+' ';const retry=document.createElement('button');retry.className='text-button';retry.textContent='Try again';retry.onclick=()=>loadPosts();$('status').append(retry);}}finally{refreshing=false;}}
 async function postAction(e){const button=e.target.closest('[data-action]');if(!button)return;const article=button.closest('[data-post]');const post=posts.find(p=>p.id===article?.dataset.post);if(!post)return;
   if(['edit-post','delete-post','edit-comment','delete-comment'].includes(button.dataset.action)){openManage(post,button.dataset.action,button.dataset.commentId);return;}
   if(button.dataset.action==='photo')await openPostDetail(post);
@@ -191,15 +191,15 @@ function centerOnUserLocation(instance,{onSettled=()=>{},notify=false}={}){
     if(untouched)instance.setView([position.coords.latitude,position.coords.longitude],15);
   },()=>{cleanup();if(notify)toast('Location wasn’t available. You can still explore the map.');},{timeout:10000,maximumAge:60000});
 }
-function initMap(){if(map)return;if(!window.L){$('map-note').textContent='The map couldn’t load. Refresh the page to try again.';return;}const nearby=posts.find(post=>post.lat!==null&&post.lng!==null)||places.office;map=makeMap('map',[nearby.lat,nearby.lng],15);renderMarkers();centerOnUserLocation(map);}
-function renderMarkers(){markers.forEach(m=>m.remove());markers=[];const located=mapPosts(posts,$('map-period').value);
+function initMap(){if(map)return;if(!window.L){$('map-note').textContent='The map couldn’t load. Refresh the page to try again.';return;}const nearby=posts.find(post=>post.lat!==null&&post.lng!==null)||places.office;map=makeMap('map',[nearby.lat,nearby.lng],15);map.on('moveend resize',renderMarkerPins);renderMarkers();centerOnUserLocation(map);}
+function renderMarkers(){const located=mapPosts(posts,$('map-period').value);
   if(mapMode==='heat'){
     heatLayer ||= createHeatLayer(L);
     heatLayer.setPosts(located.filter(post=>!post.demo));
     if(!map.hasLayer(heatLayer))heatLayer.addTo(map);
   }else if(heatLayer&&map.hasLayer(heatLayer))map.removeLayer(heatLayer);
-  const heatPins=[...new Map(located.filter(post=>!post.demo).map(post=>[`${post.lat.toFixed(3)},${post.lng.toFixed(3)}`,post])).values()].slice(0,8);
-  for(const post of mapMode==='photos'?located:heatPins){const pin=L.divIcon({className:mapMode==='heat'?'photo-pin heat-photo-pin':'photo-pin',html:`<img src="${escapeHTML(post.image)}" alt="${escapeHTML(post.author)}">`,iconSize:[49,54],iconAnchor:mapMode==='heat'?[24,82]:[24,54]});const marker=L.marker([post.lat,post.lng],{icon:pin,title:`${post.author} — ${post.location}`,alt:`Open moment by ${post.author}`,keyboard:true}).addTo(map);marker.bindPopup(`<img class="popup-photo" src="${escapeHTML(post.image)}" alt=""><div class="popup-author">${escapeHTML(post.author)}</div><div class="popup-place">${escapeHTML(post.location)}</div>`);marker.on('click',()=>{map.closePopup();void openPostDetail(post);});markers.push(marker);}const shown=mapMode==='heat'?located.filter(post=>!post.demo):located;
+  renderMarkerPins();
+  const shown=mapMode==='heat'?located.filter(post=>!post.demo):located;
   const withoutLocation=posts.filter(post=>!Number.isFinite(post.lat)||!Number.isFinite(post.lng)).length;
   $('map-note').textContent=shown.length
     ? `${shown.length} located photo${shown.length===1?'':'s'} · ${mapMode==='heat'?'Warmer areas mean more photos together. Tap a thumbnail to open a moment. Examples excluded.':'Select a photo pin to see the moment.'}`
@@ -210,6 +210,27 @@ function renderMarkers(){markers.forEach(m=>m.remove());markers=[];const located
   const busiest=[...placesByName].sort((a,b)=>b[1]-a[1]).slice(0,3);
   $('map-summary').hidden=mapMode!=='heat'||!shown.length;
   $('map-summary').innerHTML=`<strong>${shown.length} moments</strong><span class="summary-caption">with location</span>${busiest.map(([name,count])=>`<div class="place-count"><span title="${escapeHTML(name)}">${escapeHTML(name)}</span><meter min="0" max="${shown.length}" value="${count}" aria-label="${escapeHTML(name)}: ${count} photos"></meter><span>${count}</span></div>`).join('')}`;
+}
+// Query parameters keep the local Node preview compatible (it serves the original).
+function photoUrl(post,size){return size==='original'||!post.image.startsWith('/uploads/')?post.image:`${post.image}?size=${size}`;}
+function renderMarkerPins(){
+  if(!map)return;
+  const bounds=map.getBounds().pad(.2);
+  const visible=mapPosts(posts,$('map-period').value).filter(post=>bounds.contains([post.lat,post.lng])&&(mapMode!=='heat'||!post.demo));
+  const selected=mapMode==='heat'
+    ? [...new Map(visible.map(post=>[`${post.lat.toFixed(3)},${post.lng.toFixed(3)}`,post])).values()].slice(0,8)
+    : visible;
+  const keep=new Set(selected.map(post=>post.id));
+  for(const [id,entry] of markers){if(!keep.has(id)){entry.marker.remove();markers.delete(id);}}
+  for(const post of selected){
+    const signature=JSON.stringify([mapMode,post.image,post.lat,post.lng,post.author,post.location]);
+    if(markers.get(post.id)?.signature===signature)continue;
+    markers.get(post.id)?.marker.remove();
+    const pin=L.divIcon({className:mapMode==='heat'?'photo-pin heat-photo-pin':'photo-pin',html:`<img src="${escapeHTML(photoUrl(post,'map'))}" decoding="async" alt="${escapeHTML(post.author)}">`,iconSize:[49,54],iconAnchor:mapMode==='heat'?[24,82]:[24,54]});
+    const marker=L.marker([post.lat,post.lng],{icon:pin,title:`${post.author} — ${post.location}`,alt:`Open moment by ${post.author}`,keyboard:true}).addTo(map);
+    marker.on('click',()=>{const current=posts.find(item=>item.id===post.id);if(current)void openPostDetail(current);});
+    markers.set(post.id,{marker,signature});
+  }
 }
 function fitMap(){if(!map)return;const located=mapPosts(posts,$('map-period').value).filter(post=>mapMode!=='heat'||!post.demo);if(located.length)map.fitBounds(L.latLngBounds(located.map(post=>[post.lat,post.lng])).pad(.25),{maxZoom:15});}
 function setMapMode(mode){

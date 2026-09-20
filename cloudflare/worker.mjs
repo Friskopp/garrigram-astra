@@ -1,5 +1,6 @@
 import { authenticate, HttpError } from './auth.mjs';
 import { validateEffect } from '../public/effects.mjs';
+import { servePhoto, photoKeys } from './photos.mjs';
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_REQUEST_BYTES = MAX_IMAGE_BYTES + 64 * 1024;
@@ -111,8 +112,8 @@ export function createApp(verifyIdentity = authenticate) {
             await env.DB.prepare('UPDATE posts SET caption=? WHERE id=? AND owner_email=?').bind(body.caption.trim(),postMatch[1],identity.email).run();
             return json({caption:body.caption.trim()});
           }
-          await env.PHOTOS.delete(post.image.slice('/uploads/'.length));
           await env.DB.prepare('DELETE FROM posts WHERE id=? AND owner_email=?').bind(postMatch[1],identity.email).run();
+          await env.PHOTOS.delete(photoKeys(post.image.slice('/uploads/'.length)));
           return json({deleted:true});
         }
         const commentItem=url.pathname.match(/^\/api\/posts\/([a-zA-Z0-9-]+)\/comments\/(\d+)$/);
@@ -179,15 +180,7 @@ export function createApp(verifyIdentity = authenticate) {
         if (url.pathname.startsWith('/api/')) fail('Not found.',404);
         if (!['GET','HEAD'].includes(method)) fail('Method not allowed.',405);
         if (url.pathname.startsWith('/uploads/')) {
-          const key = url.pathname.slice('/uploads/'.length);
-          if (!/^[0-9a-f-]{36}\.(jpg|png|webp)$/.test(key)) fail('Photo not found.',404);
-          const photo = await env.PHOTOS.get(key);
-          if (!photo) fail('Photo not found.',404);
-          const headers = new Headers(securityHeaders);
-          photo.writeHttpMetadata(headers);
-          headers.set('ETag',photo.httpEtag);
-          headers.set('Content-Length',String(photo.size));
-          return new Response(method === 'HEAD' ? null : photo.body, { headers });
+          return await servePhoto(request, env, securityHeaders);
         }
         const asset = await env.ASSETS.fetch(request);
         const response = new Response(asset.body, asset);

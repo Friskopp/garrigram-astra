@@ -9,6 +9,7 @@
   "assets": {"directory": "./public", "binding": "ASSETS", "run_worker_first": true},
   "d1_databases": [{"binding": "DB", "database_name": "garrigram-local", "database_id": "local", "migrations_dir": "cloudflare/migrations"}],
   "r2_buckets": [{"binding": "PHOTOS", "bucket_name": "garrigram-local-photos"}],
+  "images": {"binding": "IMAGES"},
   "dev": {"ip": "127.0.0.1", "port": 8787},
   "vars": {"ALLOWED_EMAIL_DOMAIN": "garrison.se"}
 }
